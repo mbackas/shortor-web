@@ -1,0 +1,1336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shortor Knob</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel2: #1c2128;
+    --line: #30363d;
+    --fg: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: 'Segoe UI', system-ui, sans-serif; line-height: 1.4;
+  }
+  header {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+    padding: 12px 20px; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .pill {
+    padding: 3px 10px; border-radius: 12px; font-size: 12px;
+    background: #21262d; border: 1px solid var(--line);
+  }
+  .pill.ok { background: #033a16; border-color: #2ea043; color: #56d364; }
+  .pill.bad { background: #3a1620; border-color: #b62324; color: #ff7b72; }
+  button, select, input[type="number"], input[type="file"] {
+    background: #21262d; color: var(--fg); border: 1px solid var(--line);
+    padding: 7px 12px; border-radius: 6px; cursor: pointer;
+    font: inherit;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: white; }
+  button.warn    { background: #5c3d12; border-color: var(--warn); }
+  button.danger  { background: #4d1a1f; border-color: var(--bad); }
+  main {
+    display: grid; gap: 14px; grid-template-columns: 360px 1fr;
+    padding: 14px 20px;
+  }
+  section.card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px 14px;
+  }
+  section.card h2 {
+    margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--muted); font-weight: 600;
+  }
+  .grid4 { display: grid; gap: 6px; grid-template-columns: repeat(4, 1fr); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row + .row { margin-top: 6px; }
+  .slider-row {
+    display: grid; grid-template-columns: 1fr auto;
+    align-items: baseline; gap: 0 12px; padding-top: 6px;
+  }
+  .slider-row label { font-weight: 600; font-size: 13px; }
+  .slider-row .value {
+    font-family: 'Cascadia Mono', Consolas, monospace;
+    color: var(--ok); text-align: right; min-width: 6ch;
+  }
+  .slider-row input[type=range] {
+    grid-column: 1 / 3; width: 100%; accent-color: var(--accent); margin-top: 2px;
+  }
+  canvas {
+    width: 100%; background: #0d1117; border: 1px solid var(--line);
+    border-radius: 6px; display: block;
+  }
+  .stat {
+    font-family: 'Cascadia Mono', Consolas, monospace;
+    color: var(--muted); font-size: 12px;
+  }
+  .preset-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .preset-row button { padding: 5px 9px; font-size: 12px; }
+  #console {
+    margin: 0; height: 160px; overflow: auto;
+    font: 12px 'Cascadia Mono', Consolas, monospace; color: var(--muted);
+    background: #0d1117; border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 8px; white-space: pre-wrap; word-break: break-all;
+  }
+  #liveTorque {
+    font-family: 'Cascadia Mono', Consolas, monospace;
+    color: var(--ok); font-weight: 700;
+  }
+  footer { padding: 10px 20px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+  .col { display: grid; gap: 14px; align-content: start; }
+  .help {
+    color: var(--muted); font-size: 12px; margin: 6px 0 0;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Shortor Knob</h1>
+  <span id="status" class="pill bad">Disconnected</span>
+  <select id="transport">
+    <option value="ble">BLE GATT</option>
+    <option value="serial">USB Serial</option>
+  </select>
+  <input id="otaHost" placeholder="192.168.0.26" value="192.168.0.26"
+         title="Knob IP — used by the Flash button" style="width: 130px;">
+  <button id="btnConnect" class="primary">Connect</button>
+  <span style="flex: 1"></span>
+  <span id="liveVoltage">V = —</span>
+  <span id="liveTorque">τ = —</span>
+  <span id="liveTilt" class="stat">tilt = —</span>
+  <span id="modePill" class="pill">— mode</span>
+  <span class="stat" id="deviceInfo"></span>
+</header>
+
+<main>
+  <!-- Left column -->
+  <div class="col">
+
+    <section class="card">
+      <h2>Firmware</h2>
+      <p class="help">
+        Browser-driven OTA: <b>Reboot → WiFi</b>, pick a
+        <code>firmware.bin</code>, click Flash. The knob frees the
+        radio, writes to the inactive slot, and reboots.
+      </p>
+      <div class="row">
+        <input type="file" id="firmwareFile" accept=".bin">
+      </div>
+      <div class="row" style="margin-top: 8px;">
+        <button id="btnFlash" class="primary">Flash firmware</button>
+        <button id="btnWifiMode" title="Reboot the knob into WiFi mode for OTA. Works over the current BLE connection.">Reboot → WiFi</button>
+        <button id="btnWinding">Winding test</button>
+        <button id="btnRecal" class="danger">Recalibrate</button>
+      </div>
+      <progress id="flashProgress" value="0" max="1"
+                style="width: 100%; display: none; margin-top: 8px;"></progress>
+    </section>
+
+    <section class="card">
+      <h2>Console</h2>
+      <pre id="console"></pre>
+    </section>
+  </div>
+
+  <!-- Right column -->
+  <div class="col">
+
+    <section class="card">
+      <h2>Live torque (V)</h2>
+      <canvas id="torqueCanvas" height="170"></canvas>
+    </section>
+
+    <section class="card">
+      <h2>Configure</h2>
+      <label class="row" style="margin-bottom: 6px; gap: 6px;">
+        <input type="checkbox" id="momentumOn">
+        <span>Momentum (virtual flywheel)</span>
+      </label>
+      <div id="sliders"></div>
+      <div class="preset-row" id="presets"></div>
+      <div class="row" style="margin-top: 8px;">
+        <button id="btnPushAll">Push all to firmware</button>
+        <button id="btnSave" class="primary">Save to flash</button>
+        <button id="btnForget">Forget saved</button>
+        <span class="help">Sliders push live; Save persists to NVS.</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Balancer (upright mode)</h2>
+      <p class="help">
+        4-state LQR feedback: <code>u = -K·(x − x_ref)</code> over
+        <code>[shaft, ṡhaft, tilt, ṫilt]</code>. Active only when the
+        bot is upright (auto-detected from gravity). Calibrate both
+        poses first so tilt is yaw-agnostic.
+      </p>
+      <div class="row">
+        <button id="btnCalUp">Calibrate Upright</button>
+        <button id="btnCalFlat">Calibrate Flat</button>
+        <button id="btnCalRot"  title="Rotate the tilt-measurement axis 90° around up_b (cycles through 4 perpendicular axes)">Rotate axis 90°</button>
+        <span class="stat" id="calStatus">cal: —</span>
+      </div>
+      <div id="lqrSliders" style="margin-top: 8px;"></div>
+      <canvas id="balanceCanvas" height="200"
+              style="margin-top: 10px; touch-action: none;"></canvas>
+      <div class="stat" id="balanceInfo" style="margin-top: 4px;"></div>
+      <canvas id="biasCanvas" height="100"
+              style="margin-top: 8px;"></canvas>
+      <div class="stat" id="biasInfo" style="margin-top: 4px;">tbias = —</div>
+    </section>
+
+    <section class="card">
+      <h2>Haptic profile preview</h2>
+      <canvas id="profileCanvas" height="200"></canvas>
+      <div class="stat" id="profileInfo" style="margin-top: 6px;"></div>
+    </section>
+
+    <section class="card">
+      <h2>Scroll practice ring</h2>
+      <div class="stat" style="margin-bottom: 6px;">
+        Hover and scroll inside the ring to feel the knob without
+        scrolling the rest of the page.
+      </div>
+      <canvas id="ringCanvas" width="280" height="280"
+              style="display: block; margin: 0 auto; touch-action: none;
+                     cursor: ns-resize;"></canvas>
+    </section>
+  </div>
+</main>
+
+<footer>
+  Web Bluetooth + Web Serial — Chrome / Edge desktop, Edge or Chrome
+  on Android. Commands go over the GATT command characteristic (BLE)
+  or directly over the serial port (USB).
+</footer>
+
+<script>
+"use strict";
+
+// BLE GATT minimal: one writable ASCII command char alongside the HID
+// Mouse service. Lets the slider tuning go directly over BLE without
+// WiFi/HTTP round-trip cost.
+const SVC_UUID    = "e69a0011-1234-5678-9abc-def012345678";
+const PARAMS_UUID = "e69a0002-1234-5678-9abc-def012345678";
+const CMD_UUID    = "e69a0003-1234-5678-9abc-def012345678";
+const ANGLE_UUID  = "e69a0004-1234-5678-9abc-def012345678";
+const EVENT_UUID  = "e69a0005-1234-5678-9abc-def012345678";
+
+// ─── Parameter metadata ─────────────────────────────────────────────────────
+const PARAMS = [
+  { key: "detent_n", code: "N", label: "Detents / rev",            min: 1,   max: 400,  step: 1,    def: 12,   fmt: v => v.toFixed(0)   },
+  { key: "detent_a", code: "A", label: "Sharpness α",              min: 0.1, max: 8,    step: 0.1,  def: 5,    fmt: v => v.toFixed(2)   },
+  { key: "detent_k", code: "K", label: "Click strength (V)",       min: 0,   max: 5,    step: 0.01, def: 1.5,  fmt: v => v.toFixed(3)   },
+  { key: "b_damp",   code: "D", label: "Viscous damp (V/(rad/s))", min: 0,   max: 0.25, step: 0.001,def: 0.06, fmt: v => v.toFixed(4)   },
+  { key: "j_virt",   code: "J", label: "Flywheel inertia J",       min: 0,   max: 0.3,  step: 0.001,def: 0.03, fmt: v => v.toFixed(3)   },
+  { key: "b_couple", code: "C", label: "Flywheel coupling B_c",    min: 0,   max: 0.3,  step: 0.001,def: 0,    fmt: v => v.toFixed(3)   },
+];
+
+// Balance-mode LQR gains + position setpoint. Indexed for `Cg<i><f>`
+// commands; setpoint uses `Cx<f>`.
+const LQR_PARAMS = [
+  // All sliders give 25 detents from min→max (step = range/25).
+  { key: "k_x",     idx: 0, label: "K · shaft pos",   min: 0, max: 0.2,  step: 0.008,   def: 0, fmt: v => v.toFixed(3) },
+  { key: "k_xv",    idx: 1, label: "K · shaft vel",   min: 0, max: 0.01, step: 0.0004,  def: 0, fmt: v => v.toFixed(4) },
+  { key: "k_th",    idx: 2, label: "K · tilt (rad)",  min: 0, max: 1.5,  step: 0.06,    def: 0, fmt: v => v.toFixed(3) },
+  { key: "k_thd",   idx: 3, label: "K · tilt rate",   min: 0, max: 0.05, step: 0.002,   def: 0, fmt: v => v.toFixed(4) },
+  // Setpoint shown in revs to match the saturation display; firmware
+  // command Cx takes rad, so we ×2π on send and ÷2π on params readback.
+  // Sign is flipped so the slider direction matches the robot's
+  // physical motion (firmware shaft-angle convention is opposite).
+  // step=0.02 over range ±0.2 gives 21 detents with 0 exactly at the
+  // middle of the slider — always reachable.
+  { key: "x_ref",   code: "x", label: "Shaft setpoint (rev)", min: -0.2, max: 0.2, step: 0.02, def: 0, fmt: v => v.toFixed(2) },
+];
+
+const PRESETS = {
+  Subtle:   { detent_n: 24, detent_a: 2,  detent_k: 0.2, b_damp: 0.03 },
+  Default:  { detent_n: 12, detent_a: 5,  detent_k: 0.5, b_damp: 0.03 },
+  Snappy:   { detent_n: 12, detent_a: 5,  detent_k: 1.0, b_damp: 0.05 },
+  Powerful: { detent_n: 12, detent_a: 5,  detent_k: 1.5, b_damp: 0.06 },
+  Free:     { detent_n: 12, detent_a: 1,  detent_k: 0,   b_damp: 0.01 },
+};
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+const consoleEl = document.getElementById("console");
+let lastLogMsg  = null;
+let lastLogEl   = null;
+let lastLogN    = 1;
+function log(msg, cls) {
+  // Dedupe repeats — collapses error storms into "msg (×N)".
+  if (msg === lastLogMsg && lastLogEl) {
+    lastLogN += 1;
+    lastLogEl.textContent =
+      `${new Date().toLocaleTimeString()}  ${msg} (×${lastLogN})`;
+    consoleEl.scrollTop = consoleEl.scrollHeight;
+    return;
+  }
+  const line = `${new Date().toLocaleTimeString()}  ${msg}`;
+  const span = document.createElement("div");
+  span.textContent = line;
+  if (cls === "bad") span.style.color = "#ff7b72";
+  if (cls === "ok")  span.style.color = "#56d364";
+  consoleEl.appendChild(span);
+  while (consoleEl.childElementCount > 400) consoleEl.removeChild(consoleEl.firstChild);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+  lastLogMsg = msg; lastLogEl = span; lastLogN = 1;
+}
+
+const enc = new TextEncoder();
+
+// ─── Transports ─────────────────────────────────────────────────────────────
+class BleTransport {
+  constructor() { this.device = null; this.cmd = null; }
+  async connect() {
+    if (!("bluetooth" in navigator)) throw new Error("Web Bluetooth not supported");
+    this.device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: "Shortor Knob V3" }],
+      optionalServices: [SVC_UUID],
+    });
+    this.device.addEventListener("gattserverdisconnected", (ev) => {
+      const name = (this.device && this.device.name) || "(unnamed)";
+      const dt   = Math.round((performance.now() - this._connectedAt) / 100) / 10;
+      onDisconnect(`BLE gattserverdisconnected — device="${name}" up=${dt}s`);
+    });
+    this._connectedAt = performance.now();
+    const server = await this.device.gatt.connect();
+    const svc    = await server.getPrimaryService(SVC_UUID);
+    this.cmd     = await svc.getCharacteristic(CMD_UUID);
+    try { this.params = await svc.getCharacteristic(PARAMS_UUID); }
+    catch (e) { this.params = null; }   // older firmware — no read char
+    try {
+      this.angle = await svc.getCharacteristic(ANGLE_UUID);
+      await this.angle.startNotifications();
+      this.angle.addEventListener("characteristicvaluechanged", (ev) => {
+        // 4 / 12 / 24 bytes (older → newer firmware):
+        //   [0..3]   shaft angle (rad)
+        //   [4..7]   VBUS (V)
+        //   [8..11]  torque cmd (V)
+        //   [12..15] tilt (rad)
+        //   [16..19] tilt_dot (rad/s)
+        //   [20..23] mode (0=haptic, 1=balance) as float
+        const dv = ev.target.value;
+        const angle = dv.getFloat32(0, true);
+        onLiveAngle(angle);
+        if (dv.byteLength >= 12) {
+          const vbus   = dv.getFloat32(4, true);
+          const torque = dv.getFloat32(8, true);
+          onTelem(torque);
+          const vEl = document.getElementById("liveVoltage");
+          if (vEl) vEl.textContent = `V = ${vbus.toFixed(2)}`;
+        }
+        if (dv.byteLength >= 24) {
+          const tilt = dv.getFloat32(12, true);
+          const mode = Math.round(dv.getFloat32(20, true));
+          const tEl = document.getElementById("liveTilt");
+          if (tEl) tEl.textContent = `tilt = ${(tilt * 180 / Math.PI).toFixed(1)}°`;
+          updateModePill(mode);
+          balanceLive.tilt = tilt;
+          balanceLive.mode = mode;
+        }
+        if (dv.byteLength >= 28) {
+          balanceLive.posErrSat = dv.getFloat32(24, true);
+        }
+        if (dv.byteLength >= 32) {
+          onTiltBias(dv.getFloat32(28, true));
+        }
+        if (!balanceRaf) balanceRaf = requestAnimationFrame(drawBalance);
+      });
+    } catch (e) { this.angle = null; }
+    try {
+      this.event = await svc.getCharacteristic(EVENT_UUID);
+      await this.event.startNotifications();
+      this.event.addEventListener("characteristicvaluechanged", (ev) => {
+        const text = new TextDecoder().decode(ev.target.value);
+        log("← " + (text || "(empty event)"));
+      });
+      log("Subscribed to FOC event channel.", "ok");
+    } catch (e) {
+      this.event = null;
+      log("FOC event channel unavailable: " + e.message, "bad");
+    }
+    return this.device.name || "BLE";
+  }
+  async writeCmd(line) {
+    if (!this.cmd) throw new Error("not connected");
+    await this.cmd.writeValueWithoutResponse(enc.encode(line));
+  }
+  async readParams() {
+    if (!this.params) return null;
+    const dv = await this.params.readValue();
+    return new TextDecoder().decode(dv);
+  }
+  async disconnect() {
+    if (this.device && this.device.gatt.connected) this.device.gatt.disconnect();
+  }
+  isConnected() { return !!(this.device && this.device.gatt.connected); }
+}
+
+class SerialTransport {
+  constructor() {
+    this.port = null; this.reader = null; this.writer = null;
+    this.lineBuf = ""; this._stopReader = false;
+    this._connectedAt = 0; this._readError = null;
+  }
+  async connect() {
+    if (!("serial" in navigator)) throw new Error("Web Serial not supported");
+    this.port = await navigator.serial.requestPort();
+    await this.port.open({ baudRate: 115200, bufferSize: 8192 });
+    this.writer = this.port.writable.getWriter();
+    this._connectedAt = performance.now();
+    this._readLoop();
+    return "USB serial";
+  }
+  async _readLoop() {
+    const dec = new TextDecoder();
+    this.reader = this.port.readable.getReader();
+    try {
+      while (!this._stopReader) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        this.lineBuf += dec.decode(value, { stream: true });
+        const lines = this.lineBuf.split("\n");
+        this.lineBuf = lines[lines.length - 1];
+        for (let i = 0; i < lines.length - 1; i++) onSerialLine(lines[i].replace(/\r$/, ""));
+      }
+    } catch (e) {
+      this._readError = e.message;
+    } finally {
+      try { this.reader.releaseLock(); } catch (e) {}
+      this.reader = null;
+      if (!this._stopReader) {
+        const dt = Math.round((performance.now() - this._connectedAt) / 100) / 10;
+        onDisconnect(`Serial reader ended — err=${this._readError || "EOF"} up=${dt}s`);
+      }
+    }
+  }
+  async readParams() {
+    // Send Q\n, wait for the matching response line. Returns the raw
+    // Q-line string, or null on timeout / write error.
+    return new Promise(async (resolve) => {
+      const timer = setTimeout(() => { qWaiter = null; resolve(null); }, 2000);
+      qWaiter = { resolve: (line) => { clearTimeout(timer); resolve(line); } };
+      try { await this.writer.write(enc.encode("Q\n")); }
+      catch (e) { clearTimeout(timer); qWaiter = null; resolve(null); }
+    });
+  }
+  async writeCmd(line) {
+    await this.writer.write(enc.encode(line));
+  }
+  async disconnect() {
+    this._stopReader = true;
+    if (this.reader) { try { await this.reader.cancel(); } catch (e) {} }
+    if (this.writer) { try { this.writer.releaseLock(); } catch (e) {} this.writer = null; }
+    if (this.port)   { try { await this.port.close(); } catch (e) {} this.port = null; }
+  }
+  isConnected() { return this.port !== null; }
+}
+
+let transport = null;
+
+// Parse a Q-style or params-style string ("dN=... k0=... ...") and
+// push the matching values into paramState + the slider UI.
+function applyParamsString(raw) {
+  const map = { dN: "detent_n", dA: "detent_a", dK: "detent_k",
+                dD: "b_damp",
+                J:  "j_virt",   BC: "b_couple",
+                k0: "k_x", k1: "k_xv", k2: "k_th", k3: "k_thd",
+                xref: "x_ref" };
+  for (const part of raw.trim().split(/\s+/)) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const k = part.slice(0, eq);
+    const valStr = part.slice(eq + 1);
+    if (k === "ip") {
+      // Auto-populate the OTA host field with the chip's last-known IP.
+      if (valStr && valStr !== "?" && /^\d+\.\d+\.\d+\.\d+$/.test(valStr)) {
+        const hostEl = document.getElementById("otaHost");
+        if (hostEl && hostEl.value !== valStr) {
+          hostEl.value = valStr;
+          log(`Knob IP auto-detected: ${valStr}`, "ok");
+        }
+      }
+      continue;
+    }
+    if (k === "mode") {
+      updateModePill(parseInt(valStr, 10));
+      continue;
+    }
+    if (k === "gUSet" || k === "gFSet" || k === "tRot") {
+      if (k === "gUSet")      balanceState.upCalSet    = (valStr === "1");
+      else if (k === "gFSet") balanceState.flatCalSet  = (valStr === "1");
+      else                    balanceState.tiltAxisRot = parseInt(valStr, 10) || 0;
+      updateCalStatus();
+      continue;
+    }
+    let v = parseFloat(valStr);
+    const slider_key = map[k];
+    if (!slider_key || Number.isNaN(v)) continue;
+    // Firmware reports xref in rad; UI shows revs with sign-flip so
+    // the slider direction matches physical robot motion.
+    if (slider_key === "x_ref") v = -v / (2 * Math.PI);
+    if (sliderEls[slider_key]) {
+      paramState[slider_key] = v;
+      sliderEls[slider_key].value = v;
+      if (sliderValueEls[slider_key]) {
+        const p = PARAMS.find(x => x.key === slider_key);
+        sliderValueEls[slider_key].textContent = p ? p.fmt(v) : v;
+      }
+    } else if (lqrSliderEls[slider_key]) {
+      lqrState[slider_key] = v;
+      lqrSliderEls[slider_key].value = v;
+      if (lqrValueEls[slider_key]) {
+        const p = LQR_PARAMS.find(x => x.key === slider_key);
+        lqrValueEls[slider_key].textContent = p ? p.fmt(v) : v;
+      }
+    }
+  }
+  // Sync the momentum checkbox to what the knob reports.
+  if (typeof momentumChk !== "undefined" && momentumChk) {
+    momentumChk.checked = (paramState.b_couple || 0) > 1e-6;
+    setMomentumSlidersDisabled(!momentumChk.checked);
+  }
+  drawProfile();
+  drawRing();
+}
+
+// ─── Top-level event handlers ───────────────────────────────────────────────
+let qWaiter = null;  // {resolve} for the next "Q ..." line over serial.
+function onSerialLine(line) {
+  if (line.startsWith("torque:")) {
+    const v = parseFloat(line.slice(7));
+    if (!Number.isNaN(v)) { onTelem(v); return; }
+  }
+  if (qWaiter && line.startsWith("Q ")) {
+    const w = qWaiter; qWaiter = null;
+    w.resolve(line);
+  }
+  if (line.length) log("← " + line);
+}
+function onDisconnect(reason) {
+  log(`[DISCONNECT] ${reason || "unknown reason"}`, "bad");
+  transport = null;
+  setStatus(false);
+  stopKeepalive();
+  ringLiveRad = null;   // drop back to wheel-tick visual on disconnect
+  drawRing();
+}
+
+// ─── UI ─────────────────────────────────────────────────────────────────────
+const statusEl     = document.getElementById("status");
+const deviceInfoEl = document.getElementById("deviceInfo");
+const btnConnect   = document.getElementById("btnConnect");
+const transportSel = document.getElementById("transport");
+
+function setStatus(ok, name) {
+  if (ok) {
+    statusEl.textContent = "Connected"; statusEl.className = "pill ok";
+    btnConnect.textContent = "Disconnect";
+    if (name) deviceInfoEl.textContent = name;
+  } else {
+    statusEl.textContent = "Disconnected"; statusEl.className = "pill bad";
+    btnConnect.textContent = "Connect";
+    deviceInfoEl.textContent = "";
+    document.getElementById("liveTorque").textContent = "τ = —";
+    const vEl = document.getElementById("liveVoltage");
+    if (vEl) vEl.textContent = "V = —";
+  }
+}
+
+btnConnect.onclick = async () => {
+  if (transport && transport.isConnected()) {
+    await transport.disconnect();
+    return;
+  }
+  const kind = transportSel.value;
+  if (kind === "ble") {
+    transport = new BleTransport();
+  } else {
+    transport = new SerialTransport();
+  }
+  try {
+    log(`Connecting via ${kind}...`);
+    const name = await transport.connect();
+    setStatus(true, name);
+    log("Connected.", "ok");
+    // Pull the live params off the knob so the sliders mirror reality
+    // instead of clobbering it with stale UI defaults.
+    if (typeof transport.readParams === "function") {
+      try {
+        const raw = await transport.readParams();
+        if (raw) {
+          applyParamsString(raw);
+          log("Loaded params from knob.", "ok");
+        } else {
+          log("Could not read params from knob (timeout).", "bad");
+        }
+      } catch (e) {
+        log("Param read failed: " + e.message, "bad");
+      }
+    }
+  } catch (e) {
+    log("Connect failed: " + e.message, "bad");
+    transport = null;
+  }
+};
+
+document.getElementById("btnWinding").onclick = async () => {
+  if (!transport || !transport.isConnected())
+    return log("Not connected.", "bad");
+  try {
+    await transport.writeCmd("T\n");
+    log("Winding test triggered — result coming in via event notify.", "ok");
+  } catch (e) { log("Winding test failed: " + e.message, "bad"); }
+};
+
+document.getElementById("btnRecal").onclick = async () => {
+  if (!transport) return log("Not connected.", "bad");
+  try {
+    await transport.writeCmd("L\n");
+    log("Recal sent — wiping cached alignment and rebooting.", "ok");
+  } catch (e) { log("Recal failed: " + e.message, "bad"); }
+};
+document.getElementById("btnWifiMode").onclick = async () => {
+  if (!transport) return log("Not connected.", "bad");
+  try {
+    await transport.writeCmd("Y\n");
+    log("Y sent — knob rebooting into WiFi mode. Switch transport to WiFi when HTTP responds.", "ok");
+  } catch (e) { log("Y failed: " + e.message, "bad"); }
+};
+
+// Browser OTA flash:
+//   1. Send Y over the current transport so the knob reboots into WiFi
+//      mode (sets wifi_pending=true, ESP.restart()).
+//   2. Poll /ota-prep until the HTTP server answers.
+//   3. POST the .bin to /firmware.
+document.getElementById("btnFlash").onclick = async () => {
+  const input = document.getElementById("firmwareFile");
+  if (!input.files.length) { log("Pick a firmware.bin first.", "bad"); return; }
+  const host = document.getElementById("otaHost").value.trim();
+  if (!host) { log("Set the knob's IP first.", "bad"); return; }
+  const file = input.files[0];
+  const prog = document.getElementById("flashProgress");
+  prog.style.display = ""; prog.value = 0;
+
+  // Send Y so the chip reboots into WiFi mode, then drop the transport.
+  if (transport && transport.isConnected()) {
+    if (transport instanceof BleTransport || transport instanceof SerialTransport) {
+      try {
+        await transport.writeCmd("Y\n");
+        log("Sent Y — knob rebooting into WiFi mode.");
+      } catch (e) { log("Y send failed: " + e.message, "bad"); }
+    }
+    await transport.disconnect();
+  }
+
+  // Poll /ota-prep until the HTTP server answers. This also pre-empts
+  // BLE and the motor task so the upload won't be interrupted.
+  log(`Waiting for http://${host}/ to come up...`);
+  let alive = false;
+  for (let i = 0; i < 24; i++) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 1000);
+      const resp = await fetch(`http://${host}/ota-prep`,
+                               { mode: "cors", cache: "no-store",
+                                 signal: ctrl.signal });
+      clearTimeout(t);
+      if (resp.ok) { alive = true; break; }
+    } catch (e) { /* retry */ }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  if (!alive) {
+    log("Knob HTTP never came up — flash may fail.", "bad");
+  }
+
+  log(`Uploading ${file.name} (${file.size} bytes) → http://${host}/firmware ...`);
+  try {
+    const fd = new FormData(); fd.append("firmware", file, file.name);
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `http://${host}/firmware`);
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) prog.value = e.loaded / e.total;
+      };
+      xhr.onload = () => xhr.status >= 200 && xhr.status < 300
+        ? resolve() : reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
+      xhr.onerror = () => reject(new Error("network error"));
+      xhr.send(fd);
+    });
+    log("Flash OK — knob is rebooting.", "ok");
+  } catch (e) {
+    log("Flash failed: " + e.message, "bad");
+  } finally {
+    prog.style.display = "none";
+  }
+};
+
+// ─── Sliders ────────────────────────────────────────────────────────────────
+const slidersEl       = document.getElementById("sliders");
+const sliderEls       = {};
+const sliderValueEls  = {};
+const paramState      = Object.fromEntries(PARAMS.map(p => [p.key, p.def]));
+
+for (const p of PARAMS) {
+  const row = document.createElement("div"); row.className = "slider-row";
+  const lbl = document.createElement("label"); lbl.textContent = p.label;
+  const val = document.createElement("span"); val.className = "value";
+  const sld = document.createElement("input");
+  sld.type = "range"; sld.min = p.min; sld.max = p.max; sld.step = p.step;
+  sld.value = paramState[p.key];
+  row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
+  slidersEl.appendChild(row);
+  sliderEls[p.key] = sld; sliderValueEls[p.key] = val;
+  val.textContent = p.fmt(parseFloat(sld.value));
+  sld.addEventListener("input", () => onParamChange(p, parseFloat(sld.value)));
+}
+
+let pendingSends = {};
+// Momentum toggle: when unchecked, send b_couple=0 to the firmware so
+// the flywheel coupling has no effect. The slider keeps its value as a
+// "saved" setting for when momentum is re-enabled.
+const momentumChk = document.getElementById("momentumOn");
+function effectiveBCouple() {
+  return momentumChk.checked ? paramState.b_couple : 0;
+}
+function setMomentumSlidersDisabled(off) {
+  if (sliderEls.j_virt)   sliderEls.j_virt.disabled   = off;
+  if (sliderEls.b_couple) sliderEls.b_couple.disabled = off;
+}
+momentumChk.addEventListener("change", () => {
+  pendingSends["b_couple"] = effectiveBCouple();
+  setMomentumSlidersDisabled(!momentumChk.checked);
+  log(`Momentum ${momentumChk.checked ? "enabled" : "disabled"}.`, "ok");
+});
+
+function onParamChange(p, value) {
+  paramState[p.key] = value;
+  sliderValueEls[p.key].textContent = p.fmt(value);
+  drawProfile();
+  if (p.key === "detent_n") drawRing();
+  pendingSends[p.key] = (p.key === "b_couple") ? effectiveBCouple() : value;
+}
+
+// Slider send pump: coalesces drag values and serializes writes so
+// dropped packets don't snowball into a flood of parallel timeouts.
+// Pending entries are either a raw float (haptic params, keyed by
+// param.key) or an object {kind, idx?, val} (LQR gains / setpoint).
+let sliderSending = false;
+setInterval(async () => {
+  if (!transport || sliderSending) return;
+  const entries = Object.entries(pendingSends);
+  if (!entries.length) return;
+  pendingSends = {};
+  sliderSending = true;
+  try {
+    for (const [key, val] of entries) {
+      let line = null;
+      if (val && typeof val === "object" && val.kind === "g") {
+        line = `Cg${val.idx}${val.val}\n`;
+      } else if (val && typeof val === "object" && val.kind === "x") {
+        // UI uses revs, firmware expects rad. Sign is flipped so a
+        // positive slider value maps to the robot's physical forward
+        // direction (firmware shaft convention is opposite).
+        line = `Cx${-val.val * 2 * Math.PI}\n`;
+      } else {
+        const p = PARAMS.find(x => x.key === key);
+        if (p) line = `C${p.code}${val}\n`;
+      }
+      if (!line) continue;
+      try { await transport.writeCmd(line); }
+      catch (e) { log("Cmd write failed: " + e.message, "bad"); break; }
+    }
+  } finally { sliderSending = false; }
+}, 80);
+
+// ─── Balancer sliders + calibration ─────────────────────────────────────────
+const lqrSlidersEl   = document.getElementById("lqrSliders");
+const lqrSliderEls   = {};
+const lqrValueEls    = {};
+const lqrState       = Object.fromEntries(LQR_PARAMS.map(p => [p.key, p.def]));
+const balanceState   = { upCalSet: false, flatCalSet: false, tiltAxisRot: 0 };
+
+for (const p of LQR_PARAMS) {
+  const row = document.createElement("div"); row.className = "slider-row";
+  const lbl = document.createElement("label"); lbl.textContent = p.label;
+  const val = document.createElement("span"); val.className = "value";
+  const sld = document.createElement("input");
+  sld.type = "range"; sld.min = p.min; sld.max = p.max; sld.step = p.step;
+  sld.value = lqrState[p.key];
+  row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
+  lqrSlidersEl.appendChild(row);
+  lqrSliderEls[p.key] = sld; lqrValueEls[p.key] = val;
+  val.textContent = p.fmt(parseFloat(sld.value));
+  sld.addEventListener("input", () => {
+    const v = parseFloat(sld.value);
+    lqrState[p.key] = v;
+    val.textContent = p.fmt(v);
+    // Cg<i><f> for indexed LQR gains, Cx<f> for the position setpoint.
+    if (typeof p.idx === "number") pendingSends["__lqr_" + p.idx] = { kind: "g", idx: p.idx, val: v };
+    else                           pendingSends["__lqr_x"]        = { kind: "x", val: v };
+  });
+}
+
+function updateCalStatus() {
+  const el = document.getElementById("calStatus");
+  if (!el) return;
+  el.textContent =
+    `cal: upright=${balanceState.upCalSet ? "✓" : "✗"} ` +
+    `flat=${balanceState.flatCalSet ? "✓" : "✗"} ` +
+    `axis=${balanceState.tiltAxisRot}/4`;
+}
+updateCalStatus();
+
+function updateModePill(mode) {
+  const el = document.getElementById("modePill");
+  if (!el) return;
+  if (mode === 1) {
+    el.textContent = "BALANCE"; el.className = "pill ok";
+  } else if (mode === 0) {
+    el.textContent = "HAPTIC";  el.className = "pill";
+  } else {
+    el.textContent = "— mode";  el.className = "pill";
+  }
+}
+
+document.getElementById("btnCalUp").onclick = async () => {
+  if (!transport) return log("Not connected.", "bad");
+  try { await transport.writeCmd("GU\n"); log("Calibrating upright — hold still…", "ok"); }
+  catch (e) { log("Cal failed: " + e.message, "bad"); }
+};
+document.getElementById("btnCalFlat").onclick = async () => {
+  if (!transport) return log("Not connected.", "bad");
+  try { await transport.writeCmd("GF\n"); log("Calibrating flat — hold still…", "ok"); }
+  catch (e) { log("Cal failed: " + e.message, "bad"); }
+};
+document.getElementById("btnCalRot").onclick = async () => {
+  if (!transport) return log("Not connected.", "bad");
+  try { await transport.writeCmd("GR\n"); log("Rotated tilt axis 90°.", "ok"); }
+  catch (e) { log("Rotate failed: " + e.message, "bad"); }
+};
+
+async function pushAllParams() {
+  if (!transport) return;
+  for (const p of PARAMS) {
+    const val = (p.key === "b_couple") ? effectiveBCouple()
+                                       : paramState[p.key];
+    try { await transport.writeCmd(`C${p.code}${val}\n`); }
+    catch (e) { return log("pushAll failed: " + e.message, "bad"); }
+  }
+  for (const p of LQR_PARAMS) {
+    const v = lqrState[p.key];
+    const line = (typeof p.idx === "number") ? `Cg${p.idx}${v}\n`
+                                              : `Cx${v * 2 * Math.PI}\n`;
+    try { await transport.writeCmd(line); }
+    catch (e) { return log("pushAll failed: " + e.message, "bad"); }
+  }
+  log("Pushed all params (haptic + LQR).", "ok");
+}
+document.getElementById("btnPushAll").onclick = pushAllParams;
+document.getElementById("btnSave").onclick = async () => {
+  if (!transport) return log("Not connected.", "bad");
+  try { await transport.writeCmd("S\n"); log("Saved params to NVS.", "ok"); }
+  catch (e) { log("Save failed: " + e.message, "bad"); }
+};
+document.getElementById("btnForget").onclick = async () => {
+  if (!transport) return log("Not connected.", "bad");
+  try { await transport.writeCmd("F\n"); log("Cleared saved params.", "ok"); }
+  catch (e) { log("Forget failed: " + e.message, "bad"); }
+};
+
+// Presets
+const presetsEl = document.getElementById("presets");
+for (const [name, vals] of Object.entries(PRESETS)) {
+  const btn = document.createElement("button"); btn.textContent = name;
+  btn.onclick = () => {
+    for (const [k, v] of Object.entries(vals)) {
+      if (sliderEls[k]) {
+        sliderEls[k].value = v;
+        onParamChange(PARAMS.find(p => p.key === k), v);
+      }
+    }
+    log(`Applied preset: ${name}`, "ok");
+  };
+  presetsEl.appendChild(btn);
+}
+
+// ─── Haptic profile preview ─────────────────────────────────────────────────
+const profileCanvas = document.getElementById("profileCanvas");
+const profileInfo   = document.getElementById("profileInfo");
+// Mirrors StealthController::ctrLoop's detent shape exactly:
+//   W = 2π/N,  local = θ - W·round(θ/W),  x = local/(W/2),
+//   τ = -K · sign(x) · |x|^α
+function detentTorque(theta, N, A, K) {
+  const W  = (2 * Math.PI) / N;
+  const local = theta - W * Math.round(theta / W);
+  const xn = local / (0.5 * W);
+  const mag = Math.pow(Math.abs(xn), A);
+  return -K * Math.sign(xn) * mag;
+}
+function drawProfile() {
+  const ctx = profileCanvas.getContext("2d");
+  const w = profileCanvas.width  = profileCanvas.clientWidth  * devicePixelRatio;
+  const h = profileCanvas.height = profileCanvas.clientHeight * devicePixelRatio;
+  ctx.fillStyle = "#0d1117"; ctx.fillRect(0, 0, w, h);
+
+  const N = Math.max(1, paramState.detent_n);
+  const A = Math.max(0.01, paramState.detent_a);
+  const K = paramState.detent_k;
+  const period = (2 * Math.PI) / N;
+  const xSpan  = 3 * period;
+  const xMin   = -xSpan / 2;
+  const yMax   = PARAMS.find(p => p.key === "detent_k").max;
+  const mid    = h / 2;
+
+  // Background grid: zero-torque axis, detent centers (blue), boundaries (red).
+  ctx.strokeStyle = "#30363d"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
+  ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
+  for (const k of [-1, 0, 1]) {
+    const x = ((k * period - xMin) / xSpan) * w;
+    ctx.strokeStyle = "#1f6feb";  // center
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    const xb = ((k * period + period / 2 - xMin) / xSpan) * w;
+    ctx.strokeStyle = "#7d1f1f";  // boundary
+    ctx.beginPath(); ctx.moveTo(xb, 0); ctx.lineTo(xb, h); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Torque curve. Pen up across detent boundaries so the snap shows as
+  // a real discontinuity instead of a near-vertical line.
+  ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 2 * devicePixelRatio;
+  ctx.beginPath();
+  let prevSlot = null;
+  const samples = 1440;
+  for (let i = 0; i <= samples; i++) {
+    const theta = xMin + (i / samples) * xSpan;
+    const slot  = Math.round(theta / period);
+    const t = detentTorque(theta, N, A, K);
+    const x = ((theta - xMin) / xSpan) * w;
+    const y = mid - (t / yMax) * (h / 2 - 8);
+    if (prevSlot === null || slot !== prevSlot) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+    prevSlot = slot;
+  }
+  ctx.stroke();
+
+  // Snap-discontinuity markers (faint vertical dashes at ±K at each boundary).
+  ctx.strokeStyle = "#3b6e9e"; ctx.setLineDash([1, 3]);
+  ctx.lineWidth = 1 * devicePixelRatio;
+  for (const k of [-1, 0, 1]) {
+    const xb = ((k * period + period / 2 - xMin) / xSpan) * w;
+    const yTop = mid - (K / yMax) * (h / 2 - 8);
+    const yBot = mid + (K / yMax) * (h / 2 - 8);
+    ctx.beginPath(); ctx.moveTo(xb, yTop); ctx.lineTo(xb, yBot); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = "#888"; ctx.font = `${10 * devicePixelRatio}px monospace`;
+  ctx.fillText(`+${yMax}V`, 4, 14 * devicePixelRatio);
+  ctx.fillText(`-${yMax}V`, 4, h - 4);
+
+  const boundarySlope = (A * K) / (period * 0.5);  // V/rad at the snap edge
+  profileInfo.textContent =
+    `Snap height = ±${K.toFixed(3)} V     `
+    + `Boundary slope = ${boundarySlope.toFixed(2)} V/rad     `
+    + `Detent spacing = ${((period * 180) / Math.PI).toFixed(2)}°`;
+}
+new ResizeObserver(drawProfile).observe(profileCanvas);
+drawProfile();
+
+// ─── Scroll practice ring ─────────────────────────────────────────────────
+// A standalone wheel target. Hover and scroll inside it and the dial
+// rotates one tick per scroll click — gives the user something to feel
+// the knob against without scrolling the whole page.
+const ringCanvas = document.getElementById("ringCanvas");
+let ringTicks   = 0;             // signed total scroll-tick count (fallback)
+let ringRotPx   = 0;             // accumulated raw wheel deltaY pixels
+let ringLiveRad = null;          // live shaft angle from BLE notify (rad)
+const RING_TICK_PX = 50;         // pixels of wheel delta per snap tick
+
+function onLiveAngle(angle) {
+  ringLiveRad = angle;
+  drawRing();
+}
+
+function drawRing() {
+  const ctx = ringCanvas.getContext("2d");
+  const dpr = devicePixelRatio || 1;
+  const W = ringCanvas.width  = ringCanvas.clientWidth  * dpr;
+  const H = ringCanvas.height = ringCanvas.clientHeight * dpr;
+  const cx = W / 2, cy = H / 2;
+  const r  = Math.min(W, H) / 2 - 24 * dpr;
+  ctx.fillStyle = "#0d1117"; ctx.fillRect(0, 0, W, H);
+
+  // Pointer at 12 o'clock (the "active" position).
+  ctx.fillStyle = "#f0883e";
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r + 6 * dpr);
+  ctx.lineTo(cx - 8 * dpr, cy - r - 12 * dpr);
+  ctx.lineTo(cx + 8 * dpr, cy - r - 12 * dpr);
+  ctx.closePath();
+  ctx.fill();
+
+  // Outer ring.
+  ctx.strokeStyle = "#30363d"; ctx.lineWidth = 2 * dpr;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
+
+  // Tick marks — match the knob's configured detents/rev. Above ~120
+  // the ticks become unreadable so render in faint bands of dots.
+  const divs    = Math.max(1, Math.round(paramState.detent_n));
+  const dense   = divs > 120;
+  const tickAngle = (2 * Math.PI) / divs;
+  const baseRot   = -Math.PI / 2;
+  // When the knob is streaming live angle over BLE, mirror it directly.
+  // Otherwise fall back to wheel-tick accumulation.
+  const dialRot   = baseRot + (ringLiveRad !== null
+                               ? ringLiveRad
+                               : ringTicks * tickAngle);
+  const majorEvery = divs >= 48 ? Math.max(1, Math.round(divs / 12)) : 6;
+  for (let i = 0; i < divs; i++) {
+    const a = dialRot + i * tickAngle;
+    const isMajor = (i % majorEvery) === 0;
+    if (dense && !isMajor) {
+      // dot mark
+      const x = cx + Math.cos(a) * (r - 6 * dpr);
+      const y = cy + Math.sin(a) * (r - 6 * dpr);
+      ctx.fillStyle = "#444";
+      ctx.beginPath(); ctx.arc(x, y, 1 * dpr, 0, 2 * Math.PI); ctx.fill();
+      continue;
+    }
+    const tickLen = (isMajor ? 18 : 10) * dpr;
+    const x1 = cx + Math.cos(a) * (r - tickLen);
+    const y1 = cy + Math.sin(a) * (r - tickLen);
+    const x2 = cx + Math.cos(a) * (r - 2 * dpr);
+    const y2 = cy + Math.sin(a) * (r - 2 * dpr);
+    ctx.strokeStyle = isMajor ? "#58a6ff" : "#666";
+    ctx.lineWidth   = (isMajor ? 3 : 1.5) * dpr;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+
+  // Tick counter in the center.
+  ctx.fillStyle = "#c9d1d9";
+  ctx.font = `${36 * dpr}px monospace`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(String(ringTicks), cx, cy - 6 * dpr);
+  ctx.fillStyle = "#8b949e";
+  ctx.font = `${11 * dpr}px monospace`;
+  ctx.fillText("scroll ticks", cx, cy + 20 * dpr);
+}
+
+ringCanvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  // deltaY > 0 = scroll down. Convention: down = +1 tick.
+  ringRotPx += e.deltaY;
+  while (ringRotPx >=  RING_TICK_PX) { ringTicks += 1; ringRotPx -= RING_TICK_PX; }
+  while (ringRotPx <= -RING_TICK_PX) { ringTicks -= 1; ringRotPx += RING_TICK_PX; }
+  drawRing();
+}, { passive: false });
+
+ringCanvas.addEventListener("dblclick", () => {
+  ringTicks = 0; ringRotPx = 0; drawRing();
+});
+
+new ResizeObserver(drawRing).observe(ringCanvas);
+drawRing();
+
+// ─── Balance live visual ───────────────────────────────────────────────────
+// Side-view cart-and-pendulum. Cart slides horizontally with the saturated
+// shaft position (clamped to ±2 revs by the firmware's anti-windup), pole
+// tips by the live tilt angle. Greys out in HAPTIC mode since the saturated
+// position is meaningless then.
+const balanceCanvas = document.getElementById("balanceCanvas");
+const balanceInfo   = document.getElementById("balanceInfo");
+const balanceLive   = { tilt: 0, posErrSat: 0, mode: 0 };
+let balanceRaf = 0;
+const POS_SAT_RAD = 0.5 * Math.PI; // matches firmware POS_ABS_CAP (±0.25 rev)
+
+function drawBalance() {
+  balanceRaf = 0;
+  const ctx = balanceCanvas.getContext("2d");
+  const dpr = devicePixelRatio || 1;
+  const W = balanceCanvas.width  = balanceCanvas.clientWidth  * dpr;
+  const H = balanceCanvas.height = balanceCanvas.clientHeight * dpr;
+  ctx.fillStyle = "#0d1117"; ctx.fillRect(0, 0, W, H);
+
+  const cx0 = W / 2;
+  const groundY = H - 28 * dpr;
+  const margin  = 30 * dpr;
+  const trackHalf = (W / 2) - margin;
+  const wheelR  = 22 * dpr;
+  const poleLen = (H - 60 * dpr) * 0.85;
+  const dim = (balanceLive.mode === 1) ? 1.0 : 0.35;
+  // Absolute display axis: full track shows ±X_RANGE_REV revs around
+  // origin, so the cart's absolute position is visible AND the setpoint
+  // can be drawn as a marker at its own non-zero x. Sized to fit
+  // setpoint ±0.2 + sat ±0.25 = ±0.45 rev.
+  const X_RANGE_REV = 0.5;
+  const pxPerRev = trackHalf / X_RANGE_REV;
+  // px per radian of *cart translation* (used for rolling-without-slipping
+  // spoke angle). 1 rev of shaft = 2π rad of rotation = pxPerRev pixels of
+  // translation. We need translation_px/wheelR.
+  const pxPerRad = pxPerRev / (2 * Math.PI);
+
+  // User-frame setpoint (revs) and tracking error (revs, sign-flipped
+  // from chip frame to match physical direction).
+  const setRev   = (typeof lqrState !== "undefined" && lqrState.x_ref) ? lqrState.x_ref : 0;
+  const errRev   = -balanceLive.posErrSat / (2 * Math.PI);
+  const cartRev  = setRev + errRev;
+  const satRev   = POS_SAT_RAD / (2 * Math.PI);
+
+  // Ground line.
+  ctx.strokeStyle = `rgba(99, 110, 123, ${dim})`;
+  ctx.lineWidth = 1 * dpr;
+  ctx.beginPath();
+  ctx.moveTo(margin, groundY);
+  ctx.lineTo(W - margin, groundY);
+  ctx.stroke();
+
+  // Tick marks every 0.1 rev across the absolute axis. Center tick is
+  // origin (cart=0). Major ticks every 0.1 rev get labels.
+  ctx.strokeStyle = `rgba(99, 110, 123, ${0.6 * dim})`;
+  ctx.fillStyle   = `rgba(139, 148, 158, ${dim})`;
+  ctx.font = `${10 * dpr}px monospace`;
+  ctx.textAlign = "center";
+  for (let n = -5; n <= 5; n++) {
+    const xRev = n * 0.1;
+    const x = cx0 + xRev * pxPerRev;
+    const tickH = (n === 0) ? 8 * dpr : 4 * dpr;
+    ctx.beginPath(); ctx.moveTo(x, groundY); ctx.lineTo(x, groundY + tickH); ctx.stroke();
+    if (n % 2 === 0) ctx.fillText(`${xRev.toFixed(1)}r`, x, groundY + 20 * dpr);
+  }
+
+  // Saturation boundaries at setpoint ± satRev (move with setpoint).
+  ctx.strokeStyle = `rgba(248, 81, 73, ${0.55 * dim})`;
+  ctx.setLineDash([4 * dpr, 4 * dpr]);
+  ctx.lineWidth = 1 * dpr;
+  for (const s of [-1, 1]) {
+    const x = cx0 + (setRev + s * satRev) * pxPerRev;
+    ctx.beginPath();
+    ctx.moveTo(x, groundY - poleLen - 20 * dpr);
+    ctx.lineTo(x, groundY + 8 * dpr);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Setpoint marker — solid vertical line + flag at the top.
+  const setX = cx0 + setRev * pxPerRev;
+  ctx.strokeStyle = `rgba(63, 185, 80, ${0.85 * dim})`;
+  ctx.lineWidth = 2 * dpr;
+  ctx.beginPath();
+  ctx.moveTo(setX, groundY - poleLen - 16 * dpr);
+  ctx.lineTo(setX, groundY);
+  ctx.stroke();
+  ctx.fillStyle = `rgba(63, 185, 80, ${0.85 * dim})`;
+  ctx.beginPath();
+  ctx.moveTo(setX, groundY - poleLen - 16 * dpr);
+  ctx.lineTo(setX + 14 * dpr, groundY - poleLen - 10 * dpr);
+  ctx.lineTo(setX, groundY - poleLen - 4 * dpr);
+  ctx.closePath();
+  ctx.fill();
+
+  // Wheel (cart) at absolute position cartRev.
+  const wx = cx0 + cartRev * pxPerRev;
+  const wy = groundY - wheelR;
+
+  // Pole tipped by tilt angle (clamped to ±90° for drawing sanity).
+  const tilt = Math.max(-Math.PI/2, Math.min(Math.PI/2, balanceLive.tilt));
+  const px = wx + Math.sin(tilt) * poleLen;
+  const py = wy - Math.cos(tilt) * poleLen;
+
+  // Pole.
+  ctx.strokeStyle = (balanceLive.mode === 1) ? "#58a6ff" : `rgba(99, 110, 123, ${dim})`;
+  ctx.lineWidth   = 3 * dpr;
+  ctx.beginPath(); ctx.moveTo(wx, wy); ctx.lineTo(px, py); ctx.stroke();
+  // Pole bob.
+  ctx.fillStyle = (balanceLive.mode === 1) ? "#f0883e" : `rgba(139, 148, 158, ${dim})`;
+  ctx.beginPath(); ctx.arc(px, py, 8 * dpr, 0, 2 * Math.PI); ctx.fill();
+
+  // Wheel (drawn after the pole so it sits on top).
+  ctx.fillStyle = `rgba(35, 41, 49, ${dim})`;
+  ctx.beginPath(); ctx.arc(wx, wy, wheelR, 0, 2 * Math.PI); ctx.fill();
+  ctx.strokeStyle = (balanceLive.mode === 1) ? "#3fb950" : `rgba(99, 110, 123, ${dim})`;
+  ctx.lineWidth = 2 * dpr;
+  ctx.beginPath(); ctx.arc(wx, wy, wheelR, 0, 2 * Math.PI); ctx.stroke();
+  // Wheel "spoke" — rolling without slipping: rotation_rad =
+  // translation_px / wheelR. Canvas y is down so +angle rotates CW
+  // (visually). Rolling right = cart x increases = wheel rotates CW
+  // = +angle. Drive off the cart's absolute position so the rolling
+  // tracks the wheel's actual motion, not distance to setpoint.
+  const cartPx  = cartRev * pxPerRev;
+  const spokeA  = cartPx / wheelR;
+  ctx.beginPath();
+  ctx.moveTo(wx, wy);
+  ctx.lineTo(wx + Math.cos(spokeA) * (wheelR - 2 * dpr),
+             wy + Math.sin(spokeA) * (wheelR - 2 * dpr));
+  ctx.stroke();
+
+  // Readout.
+  if (balanceInfo) {
+    const tDeg = (balanceLive.tilt * 180 / Math.PI).toFixed(1);
+    const satFlag = Math.abs(balanceLive.posErrSat) > POS_SAT_RAD - 1e-3 ? "  [SAT]" : "";
+    balanceInfo.textContent =
+      `cart = ${cartRev.toFixed(3)} rev   `
+      + `setpoint = ${setRev.toFixed(2)} rev   `
+      + `err = ${errRev.toFixed(3)} rev${satFlag}   `
+      + `tilt = ${tDeg}°   mode = ${balanceLive.mode === 1 ? "BALANCE" : "haptic"}`;
+  }
+}
+new ResizeObserver(() => { if (!balanceRaf) balanceRaf = requestAnimationFrame(drawBalance); }).observe(balanceCanvas);
+drawBalance();
+
+// ─── Live torque rolling plot ──────────────────────────────────────────────
+const torqueCanvas = document.getElementById("torqueCanvas");
+const liveTorqueEl = document.getElementById("liveTorque");
+const PLOT_LEN = 600;
+const torqueBuf = new Float32Array(PLOT_LEN);
+let torqueIdx = 0;
+const PLOT_YR = 2.0;
+
+function onTelem(v) {
+  torqueBuf[torqueIdx] = v;
+  torqueIdx = (torqueIdx + 1) % PLOT_LEN;
+  liveTorqueEl.textContent = `τ = ${v >= 0 ? "+" : ""}${v.toFixed(4)} V`;
+  if (!plotRaf) plotRaf = requestAnimationFrame(drawTorque);
+}
+let plotRaf = 0;
+// Shared axis drawer. Reserves a gutter on the left for Y-axis labels
+// and on the bottom for X-axis labels, returns the plot rect for the
+// caller to draw the series into.
+//   yRange = [yMin, yMax]
+//   yLabel = "V" / "deg" / ...
+//   xLabel = "20 s" total span (rightmost = now)
+function drawAxes(ctx, w, h, dpr, yRange, yUnit, xSpanSec) {
+  const padL = 40 * dpr, padB = 16 * dpr, padT = 4 * dpr, padR = 6 * dpr;
+  const plotX = padL, plotY = padT;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  const [yMin, yMax] = yRange;
+  const yToPx = v => plotY + (1 - (v - yMin) / (yMax - yMin)) * plotH;
+
+  ctx.fillStyle = "#0d1117"; ctx.fillRect(0, 0, w, h);
+  // Plot background subtly distinct.
+  ctx.fillStyle = "#10161d"; ctx.fillRect(plotX, plotY, plotW, plotH);
+
+  // Y-axis ticks + labels at yMax, 0, yMin.
+  ctx.fillStyle = "#8b949e";
+  ctx.strokeStyle = "#30363d";
+  ctx.lineWidth = 1 * dpr;
+  ctx.font = `${10 * dpr}px monospace`;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (const yv of [yMax, 0, yMin]) {
+    const yp = yToPx(yv);
+    ctx.beginPath();
+    ctx.moveTo(plotX, yp); ctx.lineTo(plotX + plotW, yp);
+    if (yv === 0) { ctx.setLineDash([2, 4]); ctx.strokeStyle = "#3a4350"; }
+    else          { ctx.setLineDash([]);       ctx.strokeStyle = "#222831"; }
+    ctx.stroke();
+    ctx.fillText(`${yv >= 0 ? "+" : ""}${yv.toFixed(yUnit === "°" ? 0 : 1)}${yUnit}`,
+                 plotX - 4 * dpr, yp);
+  }
+  ctx.setLineDash([]);
+
+  // X-axis labels: left = -span, mid = -span/2, right = now.
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  ctx.fillStyle = "#8b949e";
+  for (const [frac, label] of [[0, `-${xSpanSec}s`], [0.5, `-${(xSpanSec/2)|0}s`], [1, "now"]]) {
+    const xp = plotX + frac * plotW;
+    ctx.beginPath();
+    ctx.moveTo(xp, plotY + plotH); ctx.lineTo(xp, plotY + plotH + 3 * dpr);
+    ctx.strokeStyle = "#30363d"; ctx.stroke();
+    ctx.fillText(label, xp, plotY + plotH + 4 * dpr);
+  }
+
+  return { plotX, plotY, plotW, plotH, yToPx };
+}
+
+function drawTorque() {
+  plotRaf = 0;
+  const ctx = torqueCanvas.getContext("2d");
+  const dpr = devicePixelRatio || 1;
+  const w = torqueCanvas.width  = torqueCanvas.clientWidth  * dpr;
+  const h = torqueCanvas.height = torqueCanvas.clientHeight * dpr;
+  // ~30 Hz telemetry × PLOT_LEN samples ≈ 20 s window
+  const ax = drawAxes(ctx, w, h, dpr, [-PLOT_YR, PLOT_YR], "V", 20);
+  ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 1 * dpr;
+  ctx.beginPath();
+  for (let i = 0; i < PLOT_LEN; i++) {
+    const idx = (torqueIdx + i) % PLOT_LEN;
+    const x = ax.plotX + (i * ax.plotW) / (PLOT_LEN - 1);
+    const y = ax.yToPx(torqueBuf[idx]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+new ResizeObserver(drawTorque).observe(torqueCanvas);
+drawTorque();
+
+// ─── Tilt-bias rolling plot ────────────────────────────────────────────────
+// Shows g_tilt_bias from the BLE telemetry as it converges. Y-axis fits
+// the firmware's ±10° hard cap.
+const biasCanvas = document.getElementById("biasCanvas");
+const biasInfo   = document.getElementById("biasInfo");
+const biasBuf    = new Float32Array(PLOT_LEN);
+let   biasIdx    = 0;
+const BIAS_YR_DEG = 10.0;   // matches firmware BIAS_CAP_RAD = 0.175 rad ≈ 10°
+let   biasRaf    = 0;
+
+function onTiltBias(rad) {
+  biasBuf[biasIdx] = rad;
+  biasIdx = (biasIdx + 1) % PLOT_LEN;
+  const deg = rad * 180 / Math.PI;
+  biasInfo.textContent = `tbias = ${deg >= 0 ? "+" : ""}${deg.toFixed(2)}°  (${rad.toFixed(4)} rad)`;
+  if (!biasRaf) biasRaf = requestAnimationFrame(drawBias);
+}
+function drawBias() {
+  biasRaf = 0;
+  const ctx = biasCanvas.getContext("2d");
+  const dpr = devicePixelRatio || 1;
+  const w = biasCanvas.width  = biasCanvas.clientWidth  * dpr;
+  const h = biasCanvas.height = biasCanvas.clientHeight * dpr;
+  const ax = drawAxes(ctx, w, h, dpr, [-BIAS_YR_DEG, BIAS_YR_DEG], "°", 20);
+  // ±cap dashed lines at the firmware's hard cap (matches axis ends here).
+  ctx.strokeStyle = "rgba(248, 81, 73, 0.35)";
+  ctx.setLineDash([4 * dpr, 4 * dpr]);
+  ctx.beginPath(); ctx.moveTo(ax.plotX, ax.plotY); ctx.lineTo(ax.plotX + ax.plotW, ax.plotY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(ax.plotX, ax.plotY + ax.plotH); ctx.lineTo(ax.plotX + ax.plotW, ax.plotY + ax.plotH); ctx.stroke();
+  ctx.setLineDash([]);
+  // Curve (rad → deg for plotting).
+  ctx.strokeStyle = "#f0883e"; ctx.lineWidth = 1.5 * dpr;
+  ctx.beginPath();
+  for (let i = 0; i < PLOT_LEN; i++) {
+    const idx = (biasIdx + i) % PLOT_LEN;
+    const x = ax.plotX + (i * ax.plotW) / (PLOT_LEN - 1);
+    const y = ax.yToPx(biasBuf[idx] * 180 / Math.PI);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+new ResizeObserver(drawBias).observe(biasCanvas);
+drawBias();
+
+// ─── Boot banner ────────────────────────────────────────────────────────────
+if (!("bluetooth" in navigator)) {
+  transportSel.querySelector("option[value='ble']").disabled = true;
+}
+if (!("serial" in navigator)) {
+  transportSel.querySelector("option[value='serial']").disabled = true;
+}
+</script>
+</body>
+</html>
