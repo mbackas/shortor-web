@@ -118,6 +118,7 @@
   <span class="stat" id="liveTap">taps 0/0</span>
   <span class="stat" id="liveFFWake">ff/wk 0/0</span>
   <span class="stat" id="deviceInfo"></span>
+  <span id="fwBuildPill" class="pill" title="Firmware build tag (HHMM the .bin was compiled)">fw —</span>
 </header>
 
 <main>
@@ -572,6 +573,11 @@ function applyParamsString(raw) {
       updateCalStatus();
       continue;
     }
+    if (k === "tag") {
+      const pill = document.getElementById("fwBuildPill");
+      if (pill) pill.textContent = `fw ${valStr}`;
+      continue;
+    }
     let v = parseFloat(valStr);
     const slider_key = map[k];
     if (!slider_key || Number.isNaN(v)) continue;
@@ -659,6 +665,8 @@ function setStatus(ok, name) {
     statusEl.textContent = "Disconnected"; statusEl.className = "pill bad";
     btnConnect.textContent = "Connect";
     deviceInfoEl.textContent = "";
+    const fw = document.getElementById("fwBuildPill");
+    if (fw) fw.textContent = "fw —";
     document.getElementById("liveTorque").textContent = "τ = —";
     const vEl = document.getElementById("liveVoltage");
     if (vEl) vEl.textContent = "V = —";
