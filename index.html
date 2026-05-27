@@ -958,8 +958,7 @@ document.getElementById("btnFlash").onclick = async () => {
       _fwHandle = h;
       _saveFwHandle(h);
       const f = await h.getFile();
-      const lbl = document.getElementById("fwLabel");
-      if (lbl) lbl.textContent = `Firmware: ${h.name} (remembered)`;
+      _setFwLabel(h.name, true);
       flashFirmware(f);
       return;
     } catch (e) { log("No firmware selected.", "warn"); return; }
@@ -967,35 +966,67 @@ document.getElementById("btnFlash").onclick = async () => {
   log("Pick a firmware.bin first (or drag one in).", "bad");
 };
 
-// File-input change → auto-flash. The user picks the file and the
-// flash kicks off without a separate button click.
+// Updates the "Firmware: NAME" label. Centralized so every entry path
+// (showOpenFilePicker, drag-drop, file input) keeps it in sync.
+function _setFwLabel(name, remembered) {
+  const lbl = document.getElementById("fwLabel");
+  if (lbl) lbl.textContent = `Firmware: ${name}` + (remembered ? " (remembered)" : " (one-shot)");
+}
+
+// File-input change → auto-flash + relabel. Plain File from <input>
+// can't be persisted as a FileSystemFileHandle, so this is one-shot.
 document.getElementById("firmwareFile").addEventListener("change", (ev) => {
   const f = ev.target.files && ev.target.files[0];
-  if (f) flashFirmware(f);
+  if (!f) return;
+  _setFwLabel(f.name, false);
+  flashFirmware(f);
 });
 
 // Restore the remembered firmware handle on page load.
 window.addEventListener("load", async () => {
   _fwHandle = await _loadFwHandle();
   if (_fwHandle) {
-    const lbl = document.getElementById("fwLabel");
-    if (lbl) lbl.textContent = `Firmware: ${_fwHandle.name} (remembered)`;
+    _setFwLabel(_fwHandle.name, true);
     log(`Remembered firmware: ${_fwHandle.name}`, "ok");
   }
 });
 
-// Drag-and-drop firmware.bin anywhere on the page. Saves the file
-// picker entirely. Browsers require both dragover (with preventDefault)
-// and drop handlers; otherwise the browser navigates to the file URL.
+// Drag-and-drop firmware.bin anywhere on the page. Tries to get a
+// FileSystemFileHandle (Chromium ≥ 86 via getAsFileSystemHandle) so
+// the dropped file replaces the persisted handle — otherwise we'd
+// keep showing the OLD remembered filename after flashing a new one.
+// Falls back to a plain File on non-Chromium browsers.
 window.addEventListener("dragover", (ev) => {
   ev.preventDefault();
   ev.dataTransfer.dropEffect = "copy";
 });
-window.addEventListener("drop", (ev) => {
+window.addEventListener("drop", async (ev) => {
   ev.preventDefault();
+  const items = ev.dataTransfer && ev.dataTransfer.items;
+  // First pass — try to grab a FileSystemFileHandle for a .bin and
+  // persist it. That way the label and the stored handle both update.
+  if (items) {
+    for (const item of items) {
+      if (item.kind !== "file") continue;
+      if (typeof item.getAsFileSystemHandle !== "function") break;
+      try {
+        const handle = await item.getAsFileSystemHandle();
+        if (handle && handle.kind === "file" && /\.bin$/i.test(handle.name)) {
+          _fwHandle = handle;
+          _saveFwHandle(handle);
+          _setFwLabel(handle.name, true);
+          const f = await handle.getFile();
+          flashFirmware(f);
+          return;
+        }
+      } catch (e) { /* fall through */ }
+    }
+  }
+  // Fallback — plain File. Can't persist, label shows "(one-shot)".
   const files = ev.dataTransfer && ev.dataTransfer.files;
   if (!files || !files.length) return;
   const f = Array.from(files).find(x => /\.bin$/i.test(x.name)) || files[0];
+  _setFwLabel(f.name, false);
   flashFirmware(f);
 });
 
