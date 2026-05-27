@@ -107,14 +107,16 @@
     <option value="ble">BLE GATT</option>
     <option value="serial">USB Serial</option>
   </select>
-  <input id="otaHost" placeholder="192.168.0.26" value="192.168.0.26"
-         title="Knob IP — used by the Flash button" style="width: 130px;">
+  <input id="otaHost" placeholder="192.168.4.1" value="192.168.4.1"
+         title="Knob SoftAP IP — used by Flash firmware" style="width: 130px;">
   <button id="btnConnect" class="primary">Connect</button>
   <span style="flex: 1"></span>
   <span id="liveVoltage">V = —</span>
   <span id="liveTorque">τ = —</span>
   <span id="liveTilt" class="stat">tilt = —</span>
   <span id="modePill" class="pill">— mode</span>
+  <span class="stat" id="liveTap">taps 0/0</span>
+  <span class="stat" id="liveFFWake">ff/wk 0/0</span>
   <span class="stat" id="deviceInfo"></span>
 </header>
 
@@ -125,16 +127,22 @@
     <section class="card">
       <h2>Firmware</h2>
       <p class="help">
-        Browser-driven OTA: <b>Reboot → WiFi</b>, pick a
-        <code>firmware.bin</code>, click Flash. The knob frees the
-        radio, writes to the inactive slot, and reboots.
+        Hybrid OTA: BLE for control, WiFi for the binary. Pick a
+        <code>firmware.bin</code> once and the browser remembers it
+        — subsequent flashes are just one click on <b>Flash firmware</b>
+        (Chromium-only; on other browsers, drag the file in or use the
+        picker each time). Chip reboots into its own SoftAP
+        <code>Shortor-OTA</code>; join that network and the upload to
+        <code>192.168.4.1</code> starts automatically.
       </p>
       <div class="row">
         <input type="file" id="firmwareFile" accept=".bin">
       </div>
+      <div class="row" style="margin-top: 4px;">
+        <span id="fwLabel" class="stat" style="font-size: 11px;">No firmware remembered yet.</span>
+      </div>
       <div class="row" style="margin-top: 8px;">
         <button id="btnFlash" class="primary">Flash firmware</button>
-        <button id="btnWifiMode" title="Reboot the knob into WiFi mode for OTA. Works over the current BLE connection.">Reboot → WiFi</button>
         <button id="btnWinding">Winding test</button>
         <button id="btnRecal" class="danger">Recalibrate</button>
       </div>
@@ -226,11 +234,11 @@
 // BLE GATT minimal: one writable ASCII command char alongside the HID
 // Mouse service. Lets the slider tuning go directly over BLE without
 // WiFi/HTTP round-trip cost.
-const SVC_UUID    = "e69a0011-1234-5678-9abc-def012345678";
-const PARAMS_UUID = "e69a0002-1234-5678-9abc-def012345678";
-const CMD_UUID    = "e69a0003-1234-5678-9abc-def012345678";
-const ANGLE_UUID  = "e69a0004-1234-5678-9abc-def012345678";
-const EVENT_UUID  = "e69a0005-1234-5678-9abc-def012345678";
+const SVC_UUID      = "e69a0011-1234-5678-9abc-def012345678";
+const PARAMS_UUID   = "e69a0002-1234-5678-9abc-def012345678";
+const CMD_UUID      = "e69a0003-1234-5678-9abc-def012345678";
+const ANGLE_UUID    = "e69a0004-1234-5678-9abc-def012345678";
+const EVENT_UUID    = "e69a0005-1234-5678-9abc-def012345678";
 
 // ─── Parameter metadata ─────────────────────────────────────────────────────
 const PARAMS = [
@@ -248,16 +256,21 @@ const LQR_PARAMS = [
   // All sliders give 25 detents from min→max (step = range/25).
   { key: "k_x",     idx: 0, label: "K · shaft pos",   min: 0, max: 0.2,  step: 0.008,   def: 0, fmt: v => v.toFixed(3) },
   { key: "k_xv",    idx: 1, label: "K · shaft vel",   min: 0, max: 0.01, step: 0.0004,  def: 0, fmt: v => v.toFixed(4) },
-  { key: "k_th",    idx: 2, label: "K · tilt (rad)",  min: 0, max: 1.5,  step: 0.06,    def: 0, fmt: v => v.toFixed(3) },
-  { key: "k_thd",   idx: 3, label: "K · tilt rate",   min: 0, max: 0.05, step: 0.002,   def: 0, fmt: v => v.toFixed(4) },
-  // Setpoint shown in revs to match the saturation display; firmware
-  // command Cx takes rad, so we ×2π on send and ÷2π on params readback.
-  // Sign is flipped so the slider direction matches the robot's
-  // physical motion (firmware shaft-angle convention is opposite).
-  // step=0.02 over range ±0.2 gives 21 detents with 0 exactly at the
-  // middle of the slider — always reachable.
-  { key: "x_ref",   code: "x", label: "Shaft setpoint (rev)", min: -0.2, max: 0.2, step: 0.02, def: 0, fmt: v => v.toFixed(2) },
+  { key: "k_th",    idx: 2, label: "K · tilt (rad)",  min: 0, max: 4.5,  step: 0.18,    def: 0, fmt: v => v.toFixed(3) },
+  { key: "k_thd",   idx: 3, label: "K · tilt rate",   min: 0, max: 0.15, step: 0.006,   def: 0, fmt: v => v.toFixed(4) },
+  // Setpoint shown as linear cart distance in mm — wheel is 55 mm
+  // diameter (27.5 mm radius), rolling without slip. Firmware command
+  // Cx takes shaft angle in rad, so we divide by WHEEL_RADIUS_MM on
+  // send (mm → rad) and multiply on readback. Sign is flipped so the
+  // slider direction matches physical robot motion (firmware shaft-
+  // angle convention is opposite). Range ±150 mm, step 25 mm gives
+  // 13 detents with 0 exactly centered.
+  { key: "x_ref",   code: "x", label: "Cart setpoint (mm)", min: -150, max: 150, step: 25, def: 0, fmt: v => v.toFixed(0) },
 ];
+
+// Wheel radius for rolling-without-slip conversion between shaft
+// angle (rad, firmware native) and cart linear distance (mm, web UI).
+const WHEEL_RADIUS_MM = 27.5;
 
 const PRESETS = {
   Subtle:   { detent_n: 24, detent_a: 2,  detent_k: 0.2, b_damp: 0.03 },
@@ -265,6 +278,7 @@ const PRESETS = {
   Snappy:   { detent_n: 12, detent_a: 5,  detent_k: 1.0, b_damp: 0.05 },
   Powerful: { detent_n: 12, detent_a: 5,  detent_k: 1.5, b_damp: 0.06 },
   Free:     { detent_n: 12, detent_a: 1,  detent_k: 0,   b_damp: 0.01 },
+  Heavy:    { detent_n: 12, detent_a: 1,  detent_k: 0,   b_damp: 0.005, j_virt: 0.15, b_couple: 0.05 },
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -284,8 +298,9 @@ function log(msg, cls) {
   const line = `${new Date().toLocaleTimeString()}  ${msg}`;
   const span = document.createElement("div");
   span.textContent = line;
-  if (cls === "bad") span.style.color = "#ff7b72";
-  if (cls === "ok")  span.style.color = "#56d364";
+  if (cls === "bad")  span.style.color = "#ff7b72";
+  if (cls === "ok")   span.style.color = "#56d364";
+  if (cls === "warn") span.style.color = "#d29922";
   consoleEl.appendChild(span);
   while (consoleEl.childElementCount > 400) consoleEl.removeChild(consoleEl.firstChild);
   consoleEl.scrollTop = consoleEl.scrollHeight;
@@ -296,18 +311,37 @@ const enc = new TextEncoder();
 
 // ─── Transports ─────────────────────────────────────────────────────────────
 class BleTransport {
-  constructor() { this.device = null; this.cmd = null; }
-  async connect() {
-    if (!("bluetooth" in navigator)) throw new Error("Web Bluetooth not supported");
-    this.device = await navigator.bluetooth.requestDevice({
-      filters: [{ name: "Shortor Knob V3" }],
-      optionalServices: [SVC_UUID],
-    });
+  constructor() {
+    this.device = null;
+    this.cmd = null;
+    this._userDisconnected = false;   // true only when user clicked Disconnect
+    this._reconnectAbort   = false;   // set to abort an in-flight reconnect loop
+  }
+  async connect(existingDevice = null) {
+    if (existingDevice) {
+      // Reusing a previously-paired BluetoothDevice (from getDevices()) —
+      // skips the chooser dialog so auto-reconnect on page load doesn't
+      // need a user gesture.
+      this.device = existingDevice;
+    } else {
+      if (!("bluetooth" in navigator)) throw new Error("Web Bluetooth not supported");
+      this.device = await navigator.bluetooth.requestDevice({
+        filters: [{ name: "Shortor Knob V3" }],
+        optionalServices: [SVC_UUID],
+      });
+    }
     this.device.addEventListener("gattserverdisconnected", (ev) => {
       const name = (this.device && this.device.name) || "(unnamed)";
       const dt   = Math.round((performance.now() - this._connectedAt) / 100) / 10;
       onDisconnect(`BLE gattserverdisconnected — device="${name}" up=${dt}s`);
+      // Spontaneous drops (chip rebooted, range, etc.) → retry until
+      // success. User-initiated disconnect skips this.
+      if (!this._userDisconnected) this._startReconnectLoop();
     });
+    await this._gattConnect();
+    return this.device.name || "BLE";
+  }
+  async _gattConnect() {
     this._connectedAt = performance.now();
     const server = await this.device.gatt.connect();
     const svc    = await server.getPrimaryService(SVC_UUID);
@@ -350,6 +384,26 @@ class BleTransport {
         if (dv.byteLength >= 32) {
           onTiltBias(dv.getFloat32(28, true));
         }
+        // 48-byte packet (this board rev — QVAR slot removed because
+        // AH2 is grounded). tap/dtap/ff/wake counters at offsets 32..44.
+        // Edge-detect against the previous sample so each increment
+        // emits a console event line.
+        if (dv.byteLength >= 48) {
+          const tap  = dv.getFloat32(32, true);
+          const dtap = dv.getFloat32(36, true);
+          const ff   = dv.getFloat32(40, true);
+          const wake = dv.getFloat32(44, true);
+          const tEl = document.getElementById("liveTap");
+          if (tEl) tEl.textContent = `taps ${tap|0}/${dtap|0}`;
+          const fEl = document.getElementById("liveFFWake");
+          if (fEl) fEl.textContent = `ff/wk ${ff|0}/${wake|0}`;
+          if (this._prevTap  !== undefined && tap  > this._prevTap)  log("← TAP");
+          if (this._prevDtap !== undefined && dtap > this._prevDtap) log("← DOUBLE-TAP");
+          if (this._prevFf   !== undefined && ff   > this._prevFf)   log("← FREE-FALL");
+          if (this._prevWake !== undefined && wake > this._prevWake) log("← WAKE");
+          this._prevTap = tap; this._prevDtap = dtap;
+          this._prevFf  = ff;  this._prevWake = wake;
+        }
         if (!balanceRaf) balanceRaf = requestAnimationFrame(drawBalance);
       });
     } catch (e) { this.angle = null; }
@@ -365,7 +419,34 @@ class BleTransport {
       this.event = null;
       log("FOC event channel unavailable: " + e.message, "bad");
     }
-    return this.device.name || "BLE";
+  }
+  // Retry GATT-connect + service discovery on a backoff until the chip
+  // accepts the connection again or the user cancels via Disconnect.
+  // `requestDevice()` requires a user gesture so we can't call it here —
+  // but `device.gatt.connect()` on the already-paired device is fine.
+  async _startReconnectLoop() {
+    if (this._reconnecting) return;
+    this._reconnecting   = true;
+    this._reconnectAbort = false;
+    setReconnectStatus(true);
+    let attempt = 0;
+    while (!this._reconnectAbort && !this._userDisconnected) {
+      attempt++;
+      log(`[RECONNECT] attempt ${attempt}…`);
+      try {
+        await this._gattConnect();
+        setStatus(true, this.device.name || "BLE");
+        log(`[RECONNECT] back online after ${attempt} attempt(s).`, "ok");
+        break;
+      } catch (e) {
+        log(`[RECONNECT] failed: ${e.message}`);
+        // 2 s backoff between attempts — long enough not to thrash, short
+        // enough to feel "instant" when the chip finishes rebooting.
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    this._reconnecting = false;
+    setReconnectStatus(false);
   }
   async writeCmd(line) {
     if (!this.cmd) throw new Error("not connected");
@@ -377,6 +458,8 @@ class BleTransport {
     return new TextDecoder().decode(dv);
   }
   async disconnect() {
+    this._userDisconnected = true;
+    this._reconnectAbort   = true;
     if (this.device && this.device.gatt.connected) this.device.gatt.disconnect();
   }
   isConnected() { return !!(this.device && this.device.gatt.connected); }
@@ -457,17 +540,6 @@ function applyParamsString(raw) {
     if (eq <= 0) continue;
     const k = part.slice(0, eq);
     const valStr = part.slice(eq + 1);
-    if (k === "ip") {
-      // Auto-populate the OTA host field with the chip's last-known IP.
-      if (valStr && valStr !== "?" && /^\d+\.\d+\.\d+\.\d+$/.test(valStr)) {
-        const hostEl = document.getElementById("otaHost");
-        if (hostEl && hostEl.value !== valStr) {
-          hostEl.value = valStr;
-          log(`Knob IP auto-detected: ${valStr}`, "ok");
-        }
-      }
-      continue;
-    }
     if (k === "mode") {
       updateModePill(parseInt(valStr, 10));
       continue;
@@ -484,7 +556,7 @@ function applyParamsString(raw) {
     if (!slider_key || Number.isNaN(v)) continue;
     // Firmware reports xref in rad; UI shows revs with sign-flip so
     // the slider direction matches physical robot motion.
-    if (slider_key === "x_ref") v = -v / (2 * Math.PI);
+    if (slider_key === "x_ref") v = -v * WHEEL_RADIUS_MM;
     if (sliderEls[slider_key]) {
       paramState[slider_key] = v;
       sliderEls[slider_key].value = v;
@@ -525,11 +597,28 @@ function onSerialLine(line) {
 }
 function onDisconnect(reason) {
   log(`[DISCONNECT] ${reason || "unknown reason"}`, "bad");
-  transport = null;
+  // If this is a BLE transport that will auto-reconnect, keep the
+  // instance around so its retry loop has somewhere to land. The user
+  // explicitly clicking Disconnect already sets _userDisconnected, so
+  // the auto-loop will exit cleanly.
+  const willReconnect = transport instanceof BleTransport
+                        && !transport._userDisconnected;
+  if (!willReconnect) transport = null;
   setStatus(false);
   stopKeepalive();
   ringLiveRad = null;   // drop back to wheel-tick visual on disconnect
   drawRing();
+}
+
+// Toggle the header status pill into a "Reconnecting…" state while the
+// BLE auto-reconnect loop is running. Cleared once the loop succeeds
+// (setStatus(true) wins) or the user gives up (setStatus(false)).
+function setReconnectStatus(on) {
+  if (on) {
+    statusEl.textContent = "Reconnecting…";
+    statusEl.className   = "pill bad";
+    btnConnect.textContent = "Cancel";
+  }
 }
 
 // ─── UI ─────────────────────────────────────────────────────────────────────
@@ -554,8 +643,12 @@ function setStatus(ok, name) {
 }
 
 btnConnect.onclick = async () => {
-  if (transport && transport.isConnected()) {
+  // Cancel an in-flight auto-reconnect loop, or disconnect a live link.
+  if (transport && (transport.isConnected()
+                    || (transport instanceof BleTransport && transport._reconnecting))) {
     await transport.disconnect();
+    transport = null;
+    setStatus(false);
     return;
   }
   const kind = transportSel.value;
@@ -590,6 +683,41 @@ btnConnect.onclick = async () => {
   }
 };
 
+// Silent auto-reconnect on page load. navigator.bluetooth.getDevices()
+// returns BluetoothDevices the page has previously been granted access
+// to — Chromium/Edge support this without a user gesture. If a paired
+// Shortor knob shows up, we call gatt.connect() automatically, no
+// click required. Bluefy/iOS fall through to the manual Connect path.
+async function tryAutoReconnect() {
+  if (!("bluetooth" in navigator)) return false;
+  if (typeof navigator.bluetooth.getDevices !== "function") return false;
+  try {
+    const devices = await navigator.bluetooth.getDevices();
+    const known = devices.find(d => d.name === "Shortor Knob V3");
+    if (!known) return false;
+    log("Auto-reconnecting to known knob…");
+    const xport = new BleTransport();
+    const name = await xport.connect(known);
+    transport = xport;
+    setStatus(true, name);
+    log("Auto-reconnected.", "ok");
+    if (typeof xport.readParams === "function") {
+      try {
+        const raw = await xport.readParams();
+        if (raw) { applyParamsString(raw); log("Loaded params from knob.", "ok"); }
+      } catch (e) { /* non-fatal */ }
+    }
+    return true;
+  } catch (e) {
+    log("Auto-reconnect failed (likely out of range): " + e.message);
+    return false;
+  }
+}
+
+// Fire auto-reconnect on initial page load. Doesn't block UI; on
+// failure the user just clicks Connect as before.
+window.addEventListener("load", () => { tryAutoReconnect().catch(() => {}); });
+
 document.getElementById("btnWinding").onclick = async () => {
   if (!transport || !transport.isConnected())
     return log("Not connected.", "bad");
@@ -606,44 +734,100 @@ document.getElementById("btnRecal").onclick = async () => {
     log("Recal sent — wiping cached alignment and rebooting.", "ok");
   } catch (e) { log("Recal failed: " + e.message, "bad"); }
 };
-document.getElementById("btnWifiMode").onclick = async () => {
-  if (!transport) return log("Not connected.", "bad");
-  try {
-    await transport.writeCmd("Y\n");
-    log("Y sent — knob rebooting into WiFi mode. Switch transport to WiFi when HTTP responds.", "ok");
-  } catch (e) { log("Y failed: " + e.message, "bad"); }
-};
+// Hybrid flash: BLE for control, SoftAP+HTTP for the bulk transfer.
+//   1. Send Y over the active transport → chip reboots into WiFi mode.
+//   2. Drop the current transport (BLE will be off in WiFi mode).
+//   3. Prompt the user to join the "Shortor-OTA" network.
+//   4. POST the .bin to /firmware on 192.168.4.1.
+// Persistent firmware file handle — File System Access API (Chromium).
+// Stored in IndexedDB so subsequent page loads remember the user's
+// firmware.bin and a Flash click can read it directly. Permission to
+// read may need to be re-granted per session (one OS prompt, fired
+// from the user gesture of clicking Flash).
+let _fwHandle = null;
 
-// Browser OTA flash:
-//   1. Send Y over the current transport so the knob reboots into WiFi
-//      mode (sets wifi_pending=true, ESP.restart()).
-//   2. Poll /ota-prep until the HTTP server answers.
-//   3. POST the .bin to /firmware.
-document.getElementById("btnFlash").onclick = async () => {
-  const input = document.getElementById("firmwareFile");
-  if (!input.files.length) { log("Pick a firmware.bin first.", "bad"); return; }
+async function _openDB() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open("shortor", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("files");
+    req.onsuccess = () => res(req.result);
+    req.onerror   = () => rej(req.error);
+  });
+}
+async function _loadFwHandle() {
+  try {
+    const db = await _openDB();
+    return await new Promise((res, rej) => {
+      const tx  = db.transaction("files", "readonly");
+      const req = tx.objectStore("files").get("firmware");
+      req.onsuccess = () => res(req.result || null);
+      req.onerror   = () => rej(req.error);
+    });
+  } catch (e) { return null; }
+}
+async function _saveFwHandle(handle) {
+  try {
+    const db = await _openDB();
+    await new Promise((res, rej) => {
+      const tx = db.transaction("files", "readwrite");
+      tx.objectStore("files").put(handle, "firmware");
+      tx.oncomplete = () => res();
+      tx.onerror    = () => rej(tx.error);
+    });
+  } catch (e) { /* non-fatal */ }
+}
+async function _fileFromHandle(handle) {
+  if (!handle) return null;
+  // Re-grant if needed (must be inside a user gesture).
+  if (typeof handle.queryPermission === "function") {
+    let perm = await handle.queryPermission({ mode: "read" });
+    if (perm !== "granted") perm = await handle.requestPermission({ mode: "read" });
+    if (perm !== "granted") return null;
+  }
+  return await handle.getFile();
+}
+
+// Latched so dropping the same file twice doesn't queue two flashes.
+let flashInFlight = false;
+
+async function flashFirmware(file) {
+  if (flashInFlight) {
+    log("→ Join 'Shortor-OTA' WiFi — flash already running, will start as soon as you're on the network.", "warn");
+    return;
+  }
+  if (!file || !/\.bin$/i.test(file.name)) {
+    log("Need a firmware.bin file.", "bad"); return;
+  }
   const host = document.getElementById("otaHost").value.trim();
   if (!host) { log("Set the knob's IP first.", "bad"); return; }
-  const file = input.files[0];
+  flashInFlight = true;
   const prog = document.getElementById("flashProgress");
   prog.style.display = ""; prog.value = 0;
 
   // Send Y so the chip reboots into WiFi mode, then drop the transport.
   if (transport && transport.isConnected()) {
-    if (transport instanceof BleTransport || transport instanceof SerialTransport) {
-      try {
-        await transport.writeCmd("Y\n");
-        log("Sent Y — knob rebooting into WiFi mode.");
-      } catch (e) { log("Y send failed: " + e.message, "bad"); }
-    }
+    try {
+      await transport.writeCmd("Y\n");
+      log("Sent Y — knob rebooting into WiFi mode.");
+    } catch (e) { log("Y send failed: " + e.message, "bad"); }
     await transport.disconnect();
   }
 
-  // Poll /ota-prep until the HTTP server answers. This also pre-empts
-  // BLE and the motor task so the upload won't be interrupted.
-  log(`Waiting for http://${host}/ to come up...`);
+  // Give the chip a moment to actually drop BLE and bring up the AP
+  // before we start polling.
+  await new Promise(r => setTimeout(r, 1500));
+
+  // FYI — only a console line (no blocking dialog). The polling loop
+  // below starts immediately; the OTA fires as soon as the chip's
+  // HTTP server answers, which happens once the user joins the
+  // Shortor-OTA network.
+  log("→ Join 'Shortor-OTA' WiFi (open, no password). Flash starts automatically once connected.", "warn");
+
+  // Poll /ota-prep until the HTTP server answers. Generous window
+  // (~90 s) since the user may take a few seconds to switch WiFi.
+  log(`Waiting for http://${host}/ to come up...`, "warn");
   let alive = false;
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 60; i++) {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 1000);
@@ -656,10 +840,13 @@ document.getElementById("btnFlash").onclick = async () => {
     await new Promise(r => setTimeout(r, 500));
   }
   if (!alive) {
-    log("Knob HTTP never came up — flash may fail.", "bad");
+    log("Knob HTTP never came up — wrong network? Aborting.", "bad");
+    prog.style.display = "none";
+    return;
   }
 
   log(`Uploading ${file.name} (${file.size} bytes) → http://${host}/firmware ...`);
+  const t0 = performance.now();
   try {
     const fd = new FormData(); fd.append("firmware", file, file.name);
     await new Promise((resolve, reject) => {
@@ -673,13 +860,81 @@ document.getElementById("btnFlash").onclick = async () => {
       xhr.onerror = () => reject(new Error("network error"));
       xhr.send(fd);
     });
-    log("Flash OK — knob is rebooting.", "ok");
+    const dt = (performance.now() - t0) / 1000;
+    log(`Flash OK in ${dt.toFixed(1)}s — knob is rebooting.`, "ok");
   } catch (e) {
     log("Flash failed: " + e.message, "bad");
   } finally {
     prog.style.display = "none";
+    flashInFlight = false;
   }
+}
+
+// Manual Flash button — tries (in order):
+//   1. Remembered FileSystemFileHandle (Chromium, persisted in IDB)
+//   2. Whatever's currently in the file input
+//   3. If neither and the File System Access API is available, opens
+//      the OS file picker and persists the handle for next time.
+document.getElementById("btnFlash").onclick = async () => {
+  // (1) cached handle path
+  if (_fwHandle) {
+    try {
+      const f = await _fileFromHandle(_fwHandle);
+      if (f) { flashFirmware(f); return; }
+    } catch (e) { log("Stored firmware unreadable: " + e.message, "warn"); }
+  }
+  // (2) current file input
+  const input = document.getElementById("firmwareFile");
+  if (input.files.length) { flashFirmware(input.files[0]); return; }
+  // (3) prompt with File System Access API if available
+  if (window.showOpenFilePicker) {
+    try {
+      const [h] = await window.showOpenFilePicker({
+        types: [{ description: "Firmware", accept: { "application/octet-stream": [".bin"] } }],
+      });
+      _fwHandle = h;
+      _saveFwHandle(h);
+      const f = await h.getFile();
+      const lbl = document.getElementById("fwLabel");
+      if (lbl) lbl.textContent = `Firmware: ${h.name} (remembered)`;
+      flashFirmware(f);
+      return;
+    } catch (e) { log("No firmware selected.", "warn"); return; }
+  }
+  log("Pick a firmware.bin first (or drag one in).", "bad");
 };
+
+// File-input change → auto-flash. The user picks the file and the
+// flash kicks off without a separate button click.
+document.getElementById("firmwareFile").addEventListener("change", (ev) => {
+  const f = ev.target.files && ev.target.files[0];
+  if (f) flashFirmware(f);
+});
+
+// Restore the remembered firmware handle on page load.
+window.addEventListener("load", async () => {
+  _fwHandle = await _loadFwHandle();
+  if (_fwHandle) {
+    const lbl = document.getElementById("fwLabel");
+    if (lbl) lbl.textContent = `Firmware: ${_fwHandle.name} (remembered)`;
+    log(`Remembered firmware: ${_fwHandle.name}`, "ok");
+  }
+});
+
+// Drag-and-drop firmware.bin anywhere on the page. Saves the file
+// picker entirely. Browsers require both dragover (with preventDefault)
+// and drop handlers; otherwise the browser navigates to the file URL.
+window.addEventListener("dragover", (ev) => {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = "copy";
+});
+window.addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  const files = ev.dataTransfer && ev.dataTransfer.files;
+  if (!files || !files.length) return;
+  const f = Array.from(files).find(x => /\.bin$/i.test(x.name)) || files[0];
+  flashFirmware(f);
+});
 
 // ─── Sliders ────────────────────────────────────────────────────────────────
 const slidersEl       = document.getElementById("sliders");
@@ -744,10 +999,11 @@ setInterval(async () => {
       if (val && typeof val === "object" && val.kind === "g") {
         line = `Cg${val.idx}${val.val}\n`;
       } else if (val && typeof val === "object" && val.kind === "x") {
-        // UI uses revs, firmware expects rad. Sign is flipped so a
-        // positive slider value maps to the robot's physical forward
-        // direction (firmware shaft convention is opposite).
-        line = `Cx${-val.val * 2 * Math.PI}\n`;
+        // UI uses mm of cart travel, firmware expects shaft angle in
+        // rad. 1 rad of shaft = WHEEL_RADIUS_MM of cart, so rad = mm
+        // / radius. Sign-flipped to match the physical-forward
+        // convention (firmware shaft sign is opposite).
+        line = `Cx${-val.val / WHEEL_RADIUS_MM}\n`;
       } else {
         const p = PARAMS.find(x => x.key === key);
         if (p) line = `C${p.code}${val}\n`;
@@ -836,7 +1092,7 @@ async function pushAllParams() {
   for (const p of LQR_PARAMS) {
     const v = lqrState[p.key];
     const line = (typeof p.idx === "number") ? `Cg${p.idx}${v}\n`
-                                              : `Cx${v * 2 * Math.PI}\n`;
+                                              : `Cx${v / WHEEL_RADIUS_MM}\n`;
     try { await transport.writeCmd(line); }
     catch (e) { return log("pushAll failed: " + e.message, "bad"); }
   }
@@ -859,6 +1115,16 @@ const presetsEl = document.getElementById("presets");
 for (const [name, vals] of Object.entries(PRESETS)) {
   const btn = document.createElement("button"); btn.textContent = name;
   btn.onclick = () => {
+    // If the preset wants momentum on (b_couple > 0), auto-tick the
+    // checkbox first so b_couple writes don't get gated to zero by
+    // effectiveBCouple(). Conversely a b_couple==0 preset un-ticks.
+    if ("b_couple" in vals) {
+      const wantOn = vals.b_couple > 1e-6;
+      if (momentumChk.checked !== wantOn) {
+        momentumChk.checked = wantOn;
+        setMomentumSlidersDisabled(!wantOn);
+      }
+    }
     for (const [k, v] of Object.entries(vals)) {
       if (sliderEls[k]) {
         sliderEls[k].value = v;
@@ -1059,6 +1325,7 @@ const balanceInfo   = document.getElementById("balanceInfo");
 const balanceLive   = { tilt: 0, posErrSat: 0, mode: 0 };
 let balanceRaf = 0;
 const POS_SAT_RAD = 0.5 * Math.PI; // matches firmware POS_ABS_CAP (±0.25 rev)
+const POS_SAT_MM  = POS_SAT_RAD * WHEEL_RADIUS_MM;  // ≈ 43.2 mm
 
 function drawBalance() {
   balanceRaf = 0;
@@ -1072,26 +1339,22 @@ function drawBalance() {
   const groundY = H - 28 * dpr;
   const margin  = 30 * dpr;
   const trackHalf = (W / 2) - margin;
-  const wheelR  = 22 * dpr;
   const poleLen = (H - 60 * dpr) * 0.85;
   const dim = (balanceLive.mode === 1) ? 1.0 : 0.35;
-  // Absolute display axis: full track shows ±X_RANGE_REV revs around
-  // origin, so the cart's absolute position is visible AND the setpoint
-  // can be drawn as a marker at its own non-zero x. Sized to fit
-  // setpoint ±0.2 + sat ±0.25 = ±0.45 rev.
-  const X_RANGE_REV = 0.5;
-  const pxPerRev = trackHalf / X_RANGE_REV;
-  // px per radian of *cart translation* (used for rolling-without-slipping
-  // spoke angle). 1 rev of shaft = 2π rad of rotation = pxPerRev pixels of
-  // translation. We need translation_px/wheelR.
-  const pxPerRad = pxPerRev / (2 * Math.PI);
+  // Absolute display axis in mm of cart travel. Sized to fit setpoint
+  // ±150 mm + saturation ±43.2 mm ≈ ±193 mm.
+  const X_RANGE_MM = 200;
+  const pxPerMM    = trackHalf / X_RANGE_MM;
+  // Wheel drawn at scale: 1 spoke rev = 2π·radius_mm of cart travel,
+  // which in pixels is 2π·radius_mm·pxPerMM = 2π·wheelR_px. So:
+  const wheelR     = WHEEL_RADIUS_MM * pxPerMM;
 
-  // User-frame setpoint (revs) and tracking error (revs, sign-flipped
-  // from chip frame to match physical direction).
-  const setRev   = (typeof lqrState !== "undefined" && lqrState.x_ref) ? lqrState.x_ref : 0;
-  const errRev   = -balanceLive.posErrSat / (2 * Math.PI);
-  const cartRev  = setRev + errRev;
-  const satRev   = POS_SAT_RAD / (2 * Math.PI);
+  // User-frame setpoint (mm) and tracking error (mm, sign-flipped
+  // from chip rad frame to match physical direction).
+  const setMM   = (typeof lqrState !== "undefined" && lqrState.x_ref) ? lqrState.x_ref : 0;
+  const errMM   = -balanceLive.posErrSat * WHEEL_RADIUS_MM;
+  const cartMM  = setMM + errMM;
+  const satMM   = POS_SAT_MM;
 
   // Ground line.
   ctx.strokeStyle = `rgba(99, 110, 123, ${dim})`;
@@ -1101,26 +1364,25 @@ function drawBalance() {
   ctx.lineTo(W - margin, groundY);
   ctx.stroke();
 
-  // Tick marks every 0.1 rev across the absolute axis. Center tick is
-  // origin (cart=0). Major ticks every 0.1 rev get labels.
+  // Tick marks every 25 mm across the absolute axis. Center tick is
+  // origin (cart=0). Major ticks every 50 mm get labels.
   ctx.strokeStyle = `rgba(99, 110, 123, ${0.6 * dim})`;
   ctx.fillStyle   = `rgba(139, 148, 158, ${dim})`;
   ctx.font = `${10 * dpr}px monospace`;
   ctx.textAlign = "center";
-  for (let n = -5; n <= 5; n++) {
-    const xRev = n * 0.1;
-    const x = cx0 + xRev * pxPerRev;
-    const tickH = (n === 0) ? 8 * dpr : 4 * dpr;
+  for (let mm = -200; mm <= 200; mm += 25) {
+    const x = cx0 + mm * pxPerMM;
+    const tickH = (mm === 0) ? 8 * dpr : 4 * dpr;
     ctx.beginPath(); ctx.moveTo(x, groundY); ctx.lineTo(x, groundY + tickH); ctx.stroke();
-    if (n % 2 === 0) ctx.fillText(`${xRev.toFixed(1)}r`, x, groundY + 20 * dpr);
+    if (mm % 50 === 0) ctx.fillText(`${mm}`, x, groundY + 20 * dpr);
   }
 
-  // Saturation boundaries at setpoint ± satRev (move with setpoint).
+  // Saturation boundaries at setpoint ± satMM (move with setpoint).
   ctx.strokeStyle = `rgba(248, 81, 73, ${0.55 * dim})`;
   ctx.setLineDash([4 * dpr, 4 * dpr]);
   ctx.lineWidth = 1 * dpr;
   for (const s of [-1, 1]) {
-    const x = cx0 + (setRev + s * satRev) * pxPerRev;
+    const x = cx0 + (setMM + s * satMM) * pxPerMM;
     ctx.beginPath();
     ctx.moveTo(x, groundY - poleLen - 20 * dpr);
     ctx.lineTo(x, groundY + 8 * dpr);
@@ -1129,7 +1391,7 @@ function drawBalance() {
   ctx.setLineDash([]);
 
   // Setpoint marker — solid vertical line + flag at the top.
-  const setX = cx0 + setRev * pxPerRev;
+  const setX = cx0 + setMM * pxPerMM;
   ctx.strokeStyle = `rgba(63, 185, 80, ${0.85 * dim})`;
   ctx.lineWidth = 2 * dpr;
   ctx.beginPath();
@@ -1144,8 +1406,8 @@ function drawBalance() {
   ctx.closePath();
   ctx.fill();
 
-  // Wheel (cart) at absolute position cartRev.
-  const wx = cx0 + cartRev * pxPerRev;
+  // Wheel (cart) at absolute position cartMM.
+  const wx = cx0 + cartMM * pxPerMM;
   const wy = groundY - wheelR;
 
   // Pole tipped by tilt angle (clamped to ±90° for drawing sanity).
@@ -1167,13 +1429,9 @@ function drawBalance() {
   ctx.strokeStyle = (balanceLive.mode === 1) ? "#3fb950" : `rgba(99, 110, 123, ${dim})`;
   ctx.lineWidth = 2 * dpr;
   ctx.beginPath(); ctx.arc(wx, wy, wheelR, 0, 2 * Math.PI); ctx.stroke();
-  // Wheel "spoke" — rolling without slipping: rotation_rad =
-  // translation_px / wheelR. Canvas y is down so +angle rotates CW
-  // (visually). Rolling right = cart x increases = wheel rotates CW
-  // = +angle. Drive off the cart's absolute position so the rolling
-  // tracks the wheel's actual motion, not distance to setpoint.
-  const cartPx  = cartRev * pxPerRev;
-  const spokeA  = cartPx / wheelR;
+  // Wheel "spoke" — rolling without slipping at the real wheel radius.
+  // Shaft angle in rad = cart linear distance / wheel radius.
+  const spokeA = cartMM / WHEEL_RADIUS_MM;
   ctx.beginPath();
   ctx.moveTo(wx, wy);
   ctx.lineTo(wx + Math.cos(spokeA) * (wheelR - 2 * dpr),
@@ -1185,9 +1443,9 @@ function drawBalance() {
     const tDeg = (balanceLive.tilt * 180 / Math.PI).toFixed(1);
     const satFlag = Math.abs(balanceLive.posErrSat) > POS_SAT_RAD - 1e-3 ? "  [SAT]" : "";
     balanceInfo.textContent =
-      `cart = ${cartRev.toFixed(3)} rev   `
-      + `setpoint = ${setRev.toFixed(2)} rev   `
-      + `err = ${errRev.toFixed(3)} rev${satFlag}   `
+      `cart = ${cartMM.toFixed(1)} mm   `
+      + `setpoint = ${setMM.toFixed(0)} mm   `
+      + `err = ${errMM.toFixed(1)} mm${satFlag}   `
       + `tilt = ${tDeg}°   mode = ${balanceLive.mode === 1 ? "BALANCE" : "haptic"}`;
   }
 }
