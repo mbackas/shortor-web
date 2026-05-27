@@ -424,6 +424,8 @@ class BleTransport {
   // accepts the connection again or the user cancels via Disconnect.
   // `requestDevice()` requires a user gesture so we can't call it here —
   // but `device.gatt.connect()` on the already-paired device is fine.
+  // Backoff is aggressive at first (chip is usually mid-reboot, ~1 s)
+  // then eases off to 3 s. Never gives up unless user cancels.
   async _startReconnectLoop() {
     if (this._reconnecting) return;
     this._reconnecting   = true;
@@ -432,17 +434,24 @@ class BleTransport {
     let attempt = 0;
     while (!this._reconnectAbort && !this._userDisconnected) {
       attempt++;
-      log(`[RECONNECT] attempt ${attempt}…`);
+      log(`[RECONNECT] attempt ${attempt}…`, "warn");
       try {
         await this._gattConnect();
         setStatus(true, this.device.name || "BLE");
         log(`[RECONNECT] back online after ${attempt} attempt(s).`, "ok");
+        // Best-effort re-fetch params after a reconnect.
+        if (typeof this.readParams === "function") {
+          try {
+            const raw = await this.readParams();
+            if (raw) applyParamsString(raw);
+          } catch (e) { /* non-fatal */ }
+        }
         break;
       } catch (e) {
-        log(`[RECONNECT] failed: ${e.message}`);
-        // 2 s backoff between attempts — long enough not to thrash, short
-        // enough to feel "instant" when the chip finishes rebooting.
-        await new Promise(r => setTimeout(r, 2000));
+        // 500 ms for the first 6 attempts (chip is usually mid-reboot
+        // ~1–3 s after a drop), then 3 s thereafter.
+        const delay = (attempt < 6) ? 500 : 3000;
+        await new Promise(r => setTimeout(r, delay));
       }
     }
     this._reconnecting = false;
