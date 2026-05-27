@@ -330,14 +330,19 @@ class BleTransport {
         optionalServices: [SVC_UUID],
       });
     }
-    this.device.addEventListener("gattserverdisconnected", (ev) => {
+    // Bound listener so we can remove it on disconnect(). Without
+    // this, the BluetoothDevice (singleton, owned by the browser)
+    // accumulates one listener per BleTransport instance — visible
+    // as duplicate [DISCONNECT] log lines from old transports.
+    this._disconnectListener = (ev) => {
       const name = (this.device && this.device.name) || "(unnamed)";
       const dt   = Math.round((performance.now() - this._connectedAt) / 100) / 10;
       onDisconnect(`BLE gattserverdisconnected — device="${name}" up=${dt}s`);
       // Spontaneous drops (chip rebooted, range, etc.) → retry until
       // success. User-initiated disconnect skips this.
       if (!this._userDisconnected) this._startReconnectLoop();
-    });
+    };
+    this.device.addEventListener("gattserverdisconnected", this._disconnectListener);
     await this._gattConnect();
     return this.device.name || "BLE";
   }
@@ -469,6 +474,13 @@ class BleTransport {
   async disconnect() {
     this._userDisconnected = true;
     this._reconnectAbort   = true;
+    // Drop the listener so a future reconnect from a new transport
+    // doesn't fire our handler too (the BluetoothDevice survives
+    // gatt.disconnect — the browser singleton stays in scope).
+    if (this._disconnectListener && this.device) {
+      this.device.removeEventListener("gattserverdisconnected", this._disconnectListener);
+      this._disconnectListener = null;
+    }
     if (this.device && this.device.gatt.connected) this.device.gatt.disconnect();
   }
   isConnected() { return !!(this.device && this.device.gatt.connected); }
