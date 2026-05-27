@@ -142,7 +142,7 @@
         <span id="fwLabel" class="stat" style="font-size: 11px;">No firmware remembered yet.</span>
       </div>
       <div class="row" style="margin-top: 8px;">
-        <button id="btnFlash" class="primary">Flash firmware</button>
+        <button id="btnFlash" class="primary" disabled title="Connect to the knob first">Flash firmware</button>
         <button id="btnWinding">Winding test</button>
         <button id="btnRecal" class="danger">Recalibrate</button>
       </div>
@@ -628,10 +628,12 @@ const btnConnect   = document.getElementById("btnConnect");
 const transportSel = document.getElementById("transport");
 
 function setStatus(ok, name) {
+  const flashBtn = document.getElementById("btnFlash");
   if (ok) {
     statusEl.textContent = "Connected"; statusEl.className = "pill ok";
     btnConnect.textContent = "Disconnect";
     if (name) deviceInfoEl.textContent = name;
+    if (flashBtn) { flashBtn.disabled = false; flashBtn.title = ""; }
   } else {
     statusEl.textContent = "Disconnected"; statusEl.className = "pill bad";
     btnConnect.textContent = "Connect";
@@ -639,6 +641,7 @@ function setStatus(ok, name) {
     document.getElementById("liveTorque").textContent = "τ = —";
     const vEl = document.getElementById("liveVoltage");
     if (vEl) vEl.textContent = "V = —";
+    if (flashBtn) { flashBtn.disabled = true; flashBtn.title = "Connect to the knob first"; }
   }
 }
 
@@ -683,35 +686,62 @@ btnConnect.onclick = async () => {
   }
 };
 
-// Silent auto-reconnect on page load. navigator.bluetooth.getDevices()
-// returns BluetoothDevices the page has previously been granted access
-// to — Chromium/Edge support this without a user gesture. If a paired
-// Shortor knob shows up, we call gatt.connect() automatically, no
-// click required. Bluefy/iOS fall through to the manual Connect path.
+// Auto-reconnect on page load. The Web Bluetooth API allows this via
+// navigator.bluetooth.getDevices() (returns devices the page has been
+// granted access to before) + device.gatt.connect() (no user gesture
+// required once the device is already permitted). Both work in
+// Chromium 85+; not available on Bluefy / iOS / Firefox.
+//
+// Failure modes — each logged so the user knows why nothing happened:
+//   • getDevices() not exposed → non-Chromium browser
+//   • Returns [] → no prior pairing on this origin
+//   • Returns devices but gatt.connect() fails → chip not advertising
+//     (just rebooted, out of range, already paired elsewhere). Retry
+//     a few times in case it's mid-boot.
 async function tryAutoReconnect() {
-  if (!("bluetooth" in navigator)) return false;
-  if (typeof navigator.bluetooth.getDevices !== "function") return false;
-  try {
-    const devices = await navigator.bluetooth.getDevices();
-    const known = devices.find(d => d.name === "Shortor Knob V3");
-    if (!known) return false;
-    log("Auto-reconnecting to known knob…");
-    const xport = new BleTransport();
-    const name = await xport.connect(known);
-    transport = xport;
-    setStatus(true, name);
-    log("Auto-reconnected.", "ok");
-    if (typeof xport.readParams === "function") {
-      try {
-        const raw = await xport.readParams();
-        if (raw) { applyParamsString(raw); log("Loaded params from knob.", "ok"); }
-      } catch (e) { /* non-fatal */ }
-    }
-    return true;
-  } catch (e) {
-    log("Auto-reconnect failed (likely out of range): " + e.message);
+  if (!("bluetooth" in navigator)) {
+    log("Auto-reconnect skipped — no Web Bluetooth in this browser.", "warn");
     return false;
   }
+  if (typeof navigator.bluetooth.getDevices !== "function") {
+    log("Auto-reconnect skipped — browser lacks getDevices() (use Chromium/Edge).", "warn");
+    return false;
+  }
+  let devices = [];
+  try { devices = await navigator.bluetooth.getDevices(); }
+  catch (e) {
+    log("getDevices() error: " + e.message, "warn");
+    return false;
+  }
+  if (devices.length === 0) {
+    log("No previously paired knob in browser memory — click Connect.", "warn");
+    return false;
+  }
+  // Don't gate on name (it can be null after restarts); try every
+  // permitted device — first that accepts gatt.connect() wins.
+  for (const d of devices) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        log(`Auto-reconnecting to ${d.name || d.id} (try ${attempt + 1}/3)…`, "warn");
+        const xport = new BleTransport();
+        const name = await xport.connect(d);
+        transport = xport;
+        setStatus(true, name);
+        log("Auto-reconnected.", "ok");
+        if (typeof xport.readParams === "function") {
+          try {
+            const raw = await xport.readParams();
+            if (raw) { applyParamsString(raw); log("Loaded params from knob.", "ok"); }
+          } catch (e) { /* non-fatal */ }
+        }
+        return true;
+      } catch (e) {
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+  }
+  log("Auto-reconnect failed — chip isn't advertising or is paired elsewhere. Click Connect.", "warn");
+  return false;
 }
 
 // Fire auto-reconnect on initial page load. Doesn't block UI; on
@@ -793,6 +823,10 @@ let flashInFlight = false;
 async function flashFirmware(file) {
   if (flashInFlight) {
     log("→ Join 'Shortor-OTA' WiFi — flash already running, will start as soon as you're on the network.", "warn");
+    return;
+  }
+  if (!transport || !transport.isConnected()) {
+    log("Connect to the knob via BLE first.", "warn");
     return;
   }
   if (!file || !/\.bin$/i.test(file.name)) {
