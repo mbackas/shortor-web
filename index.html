@@ -96,6 +96,37 @@
   .help {
     color: var(--muted); font-size: 12px; margin: 6px 0 0;
   }
+  /* Non-blocking OTA "go look at your WiFi list" overlay. */
+  .ota-banner {
+    position: fixed; inset: 0;
+    background: rgba(13, 17, 23, 0.72);
+    display: none;
+    pointer-events: none;             /* clicks fall through */
+    z-index: 9999;
+    align-items: center; justify-content: center;
+    backdrop-filter: blur(2px);
+  }
+  .ota-banner.show { display: flex; }
+  .ota-banner .card {
+    padding: 28px 40px;
+    background: #161b22;
+    border: 2px solid var(--warn);
+    border-radius: 14px;
+    color: var(--fg);
+    text-align: center;
+    max-width: 460px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  }
+  .ota-banner .title {
+    font-size: 20px; color: var(--warn); font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .ota-banner .ssid {
+    font-family: monospace; font-size: 26px; color: var(--fg);
+    background: #0d1117; padding: 8px 14px; border-radius: 8px;
+    border: 1px solid #30363d; display: inline-block; margin: 8px 0;
+  }
+  .ota-banner .sub { font-size: 13px; color: var(--muted); margin-top: 12px; }
 </style>
 </head>
 <body>
@@ -876,15 +907,19 @@ async function flashFirmware(file) {
     await transport.disconnect();
   }
 
+  // Show the non-blocking "switch to Shortor-OTA WiFi" dim overlay.
+  // Clicks fall through (pointer-events: none) so nothing is actually
+  // disabled — it's just a strong visual cue that the user's next
+  // action is OS-level, not in the app. The overlay clears the moment
+  // /ota-prep answers (proves the WiFi switch happened).
+  const banner = document.getElementById("otaBanner");
+  if (banner) banner.classList.add("show");
+
   // Brief settle before we start hammering /ota-prep. The chip's
   // restart + SoftAP bring-up is in the 700–1000 ms range; this just
   // avoids burning ~5 wasted polls during the bootloader phase.
   await new Promise(r => setTimeout(r, 400));
 
-  // FYI — only a console line (no blocking dialog). The polling loop
-  // below starts immediately; the OTA fires as soon as the chip's
-  // HTTP server answers, which happens once the user joins the
-  // Shortor-OTA network.
   log("→ Join 'Shortor-OTA' WiFi (open, no password). Flash starts automatically once connected.", "warn");
 
   // Poll /ota-prep until the HTTP server answers. Generous window
@@ -903,6 +938,9 @@ async function flashFirmware(file) {
     } catch (e) { /* retry */ }
     await new Promise(r => setTimeout(r, 250));
   }
+  // Dim clears as soon as we have an HTTP path to the chip, regardless
+  // of whether the upload itself ultimately succeeds.
+  if (banner) banner.classList.remove("show");
   if (!alive) {
     log("Knob HTTP never came up — wrong network? Aborting.", "bad");
     prog.style.display = "none";
@@ -1685,5 +1723,15 @@ if (!("serial" in navigator)) {
   transportSel.querySelector("option[value='serial']").disabled = true;
 }
 </script>
+<div id="otaBanner" class="ota-banner">
+  <div class="card">
+    <div class="title">Switch to the knob's WiFi</div>
+    <div>Join</div>
+    <div class="ssid">Shortor-OTA</div>
+    <div>(open network, no password)</div>
+    <div class="sub">Flash starts automatically once your device connects.</div>
+  </div>
+</div>
+
 </body>
 </html>
