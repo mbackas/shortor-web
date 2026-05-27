@@ -876,9 +876,10 @@ async function flashFirmware(file) {
     await transport.disconnect();
   }
 
-  // Give the chip a moment to actually drop BLE and bring up the AP
-  // before we start polling.
-  await new Promise(r => setTimeout(r, 1500));
+  // Brief settle before we start hammering /ota-prep. The chip's
+  // restart + SoftAP bring-up is in the 700–1000 ms range; this just
+  // avoids burning ~5 wasted polls during the bootloader phase.
+  await new Promise(r => setTimeout(r, 400));
 
   // FYI — only a console line (no blocking dialog). The polling loop
   // below starts immediately; the OTA fires as soon as the chip's
@@ -890,17 +891,17 @@ async function flashFirmware(file) {
   // (~90 s) since the user may take a few seconds to switch WiFi.
   log(`Waiting for http://${host}/ to come up...`, "warn");
   let alive = false;
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 120; i++) {
     try {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 1000);
+      const t = setTimeout(() => ctrl.abort(), 700);
       const resp = await fetch(`http://${host}/ota-prep`,
                                { mode: "cors", cache: "no-store",
                                  signal: ctrl.signal });
       clearTimeout(t);
       if (resp.ok) { alive = true; break; }
     } catch (e) { /* retry */ }
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 250));
   }
   if (!alive) {
     log("Knob HTTP never came up — wrong network? Aborting.", "bad");
