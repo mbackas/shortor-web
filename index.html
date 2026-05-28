@@ -6,110 +6,388 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root {
-    --bg: #0d1117;
-    --panel: #161b22;
-    --panel2: #1c2128;
-    --line: #30363d;
-    --fg: #c9d1d9;
-    --muted: #8b949e;
-    --accent: #58a6ff;
-    --ok: #3fb950;
-    --warn: #d29922;
-    --bad: #f85149;
+    --bg:           #0d1117;
+    --bg-elev:      #10161d;
+    --panel:        #161b22;
+    --panel-soft:   #1c2128;
+    --line:         #30363d;
+    --line-soft:    #21262d;
+    --fg:           #e6edf3;
+    --muted:        #8d96a0;
+    --accent:       #58a6ff;
+    --accent-strong:#1f6feb;
+    --accent-hi:    #79b8ff;
+    --ok:           #3fb950;
+    --warn:         #d29922;
+    --bad:          #f85149;
+    --radius:       8px;
+    --radius-sm:    6px;
+    --gap:          14px;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, Menlo, monospace;
   }
+
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    margin: 0; background: var(--bg); color: var(--fg);
-    font-family: 'Segoe UI', system-ui, sans-serif; line-height: 1.4;
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+    text-size-adjust: 100%;
+    -webkit-text-size-adjust: 100%;
   }
+
+  /* ── Header ─────────────────────────────────────────── */
   header {
-    display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
-    padding: 12px 20px; background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(22, 27, 34, 0.92);
+    backdrop-filter: saturate(140%) blur(8px);
+    -webkit-backdrop-filter: saturate(140%) blur(8px);
     border-bottom: 1px solid var(--line);
   }
-  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .hdr-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    flex-wrap: wrap;
+  }
+  .hdr-brand h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .hdr-grow { flex: 1; min-width: 0; }
+  .hdr-telem {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0 16px 10px;
+  }
+  .hdr-telem > * { flex: 0 0 auto; }
+  @media (max-width: 720px) {
+    .hdr-telem {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    .hdr-telem::-webkit-scrollbar { display: none; }
+  }
+
+  /* ── Pills ──────────────────────────────────────────── */
   .pill {
-    padding: 3px 10px; border-radius: 12px; font-size: 12px;
-    background: #21262d; border: 1px solid var(--line);
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: var(--line-soft);
+    border: 1px solid var(--line);
+    color: var(--fg);
+    white-space: nowrap;
+    line-height: 1.4;
   }
-  .pill.ok { background: #033a16; border-color: #2ea043; color: #56d364; }
-  .pill.bad { background: #3a1620; border-color: #b62324; color: #ff7b72; }
-  button, select, input[type="number"], input[type="file"] {
-    background: #21262d; color: var(--fg); border: 1px solid var(--line);
-    padding: 7px 12px; border-radius: 6px; cursor: pointer;
+  .pill:empty { display: none; }
+  .pill.ok   { background: rgba(63, 185, 80, 0.12);  border-color: rgba(63, 185, 80, 0.45); color: #56d364; }
+  .pill.bad  { background: rgba(248, 81, 73, 0.12);  border-color: rgba(248, 81, 73, 0.45); color: #ff7b72; }
+  .pill.warn { background: rgba(210, 153, 34, 0.12); border-color: rgba(210, 153, 34, 0.45); color: #e3b341; }
+  .pill.live {
+    font-family: var(--font-mono);
+    font-feature-settings: 'tnum';
+  }
+
+  /* ── Form controls ──────────────────────────────────── */
+  button, select, input[type="number"], input[type="file"], input[type="text"] {
+    background: var(--line-soft);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
     font: inherit;
+    font-size: 14px;
+    min-height: 36px;
+    font-family: var(--font-sans);
   }
+  /* iOS auto-zooms inputs under 16px — bump on small screens only. */
+  @media (max-width: 720px) {
+    input[type="number"], input[type="text"] { font-size: 16px; }
+  }
+  input[type="file"] { padding: 6px 8px; }
+  button { cursor: pointer; transition: border-color 120ms, background 120ms, transform 80ms; }
   button:hover:not(:disabled) { border-color: var(--accent); }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
-  button.primary { background: #1f6feb; border-color: #1f6feb; color: white; }
-  button.warn    { background: #5c3d12; border-color: var(--warn); }
-  button.danger  { background: #4d1a1f; border-color: var(--bad); }
-  main {
-    display: grid; gap: 14px; grid-template-columns: 360px 1fr;
-    padding: 14px 20px;
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
+  button.primary:hover:not(:disabled) { background: #388bfd; border-color: #388bfd; }
+  button.warn    { background: #4d3812; border-color: var(--warn); color: #f5d585; }
+  button.warn:hover:not(:disabled)   { border-color: #f0b132; }
+  button.danger  { background: #4d1a1f; border-color: var(--bad);  color: #ffb5af; }
+  button.danger:hover:not(:disabled) { border-color: #ff7b72; }
+
+  /* ── Main grid ──────────────────────────────────────── */
+  main {
+    display: grid;
+    grid-template-columns: 360px minmax(0, 1fr);
+    gap: var(--gap);
+    padding: var(--gap) 16px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  @media (max-width: 880px) {
+    main { grid-template-columns: 1fr; padding: 12px; gap: 12px; }
+  }
+  .col { display: grid; gap: var(--gap); align-content: start; min-width: 0; }
+
+  /* ── Cards ──────────────────────────────────────────── */
   section.card {
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: 8px; padding: 12px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 16px;
   }
   section.card h2 {
-    margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
-    letter-spacing: 0.07em; color: var(--muted); font-weight: 600;
+    margin: 0 0 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    font-weight: 600;
   }
-  .grid4 { display: grid; gap: 6px; grid-template-columns: repeat(4, 1fr); }
+
+  /* ── Rows / utilities ───────────────────────────────── */
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .row + .row { margin-top: 6px; }
+  .row + .row { margin-top: 8px; }
+  .grid4 { display: grid; gap: 6px; grid-template-columns: repeat(4, 1fr); }
+  .grow  { flex: 1; min-width: 0; }
+  .field-label { color: var(--muted); font-size: 12px; min-width: 56px; font-family: var(--font-mono); }
+
+  /* ── Sliders ────────────────────────────────────────── */
   .slider-row {
-    display: grid; grid-template-columns: 1fr auto;
-    align-items: baseline; gap: 0 12px; padding-top: 6px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: baseline;
+    gap: 2px 12px;
+    padding: 10px 0 4px;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.45);
   }
-  .slider-row label { font-weight: 600; font-size: 13px; }
+  .slider-row:last-child { border-bottom: none; }
+  .slider-row label {
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--fg);
+  }
   .slider-row .value {
-    font-family: 'Cascadia Mono', Consolas, monospace;
-    color: var(--ok); text-align: right; min-width: 6ch;
+    font-family: var(--font-mono);
+    font-feature-settings: 'tnum';
+    color: var(--ok);
+    text-align: right;
+    min-width: 6ch;
+    font-size: 13px;
   }
   .slider-row input[type=range] {
-    grid-column: 1 / 3; width: 100%; accent-color: var(--accent); margin-top: 2px;
+    grid-column: 1 / 3;
+    width: 100%;
+    margin: 6px 0 2px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    padding: 6px 0;
+    cursor: pointer;
+    min-height: 28px;
   }
+  .slider-row input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
+  .slider-row input[type=range]:disabled + * { opacity: 0.5; }
+
+  /* Range track + thumb (WebKit) */
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 6px;
+    background: var(--line);
+    border-radius: 999px;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 22px; height: 22px;
+    margin-top: -8px;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    transition: transform 100ms ease, background 100ms ease;
+  }
+  input[type=range]:hover::-webkit-slider-thumb { background: var(--accent-hi); }
+  input[type=range]:active::-webkit-slider-thumb { transform: scale(1.15); }
+
+  /* Range track + thumb (Firefox) */
+  input[type=range]::-moz-range-track {
+    height: 6px; background: var(--line); border-radius: 999px;
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 22px; height: 22px;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  }
+
+  @media (max-width: 720px) {
+    input[type=range]::-webkit-slider-thumb { width: 26px; height: 26px; margin-top: -10px; }
+    input[type=range]::-moz-range-thumb     { width: 26px; height: 26px; }
+    .slider-row input[type=range] { padding: 10px 0; }
+  }
+
+  /* ── Canvases ───────────────────────────────────────── */
   canvas {
-    width: 100%; background: #0d1117; border: 1px solid var(--line);
-    border-radius: 6px; display: block;
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    display: block;
   }
+  #torqueCanvas  { height: 170px; }
+  #balanceCanvas { height: 200px; touch-action: none; }
+  #biasCanvas    { height: 100px; }
+  #profileCanvas { height: 200px; }
+  #ringCanvas {
+    width: 100%;
+    max-width: 280px;
+    aspect-ratio: 1 / 1;
+    height: auto;
+    margin: 0 auto;
+    touch-action: none;
+    cursor: ns-resize;
+  }
+  @media (max-width: 720px) {
+    #torqueCanvas  { height: 140px; }
+    #balanceCanvas { height: 180px; }
+    #biasCanvas    { height: 88px; }
+    #profileCanvas { height: 180px; }
+  }
+
+  /* ── Stats ──────────────────────────────────────────── */
   .stat {
-    font-family: 'Cascadia Mono', Consolas, monospace;
-    color: var(--muted); font-size: 12px;
+    font-family: var(--font-mono);
+    font-feature-settings: 'tnum';
+    color: var(--muted);
+    font-size: 12px;
   }
-  .preset-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
-  .preset-row button { padding: 5px 9px; font-size: 12px; }
+
+  /* ── Presets ────────────────────────────────────────── */
+  .preset-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .preset-row button { padding: 6px 10px; font-size: 12px; min-height: 32px; }
+
+  /* ── Console ────────────────────────────────────────── */
   #console {
-    margin: 0; height: 160px; overflow: auto;
-    font: 12px 'Cascadia Mono', Consolas, monospace; color: var(--muted);
-    background: #0d1117; border: 1px solid var(--line); border-radius: 6px;
-    padding: 6px 8px; white-space: pre-wrap; word-break: break-all;
+    margin: 0;
+    height: 200px;
+    overflow: auto;
+    font: 12px/1.5 var(--font-mono);
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    overscroll-behavior: contain;
   }
-  #liveTorque {
-    font-family: 'Cascadia Mono', Consolas, monospace;
-    color: var(--ok); font-weight: 700;
+  #console::-webkit-scrollbar { width: 8px; }
+  #console::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+  @media (max-width: 720px) { #console { height: 150px; } }
+
+  /* ── Header live values ─────────────────────────────── */
+  #liveTorque  { color: var(--ok); font-weight: 600; }
+  #liveVoltage { color: var(--fg); }
+
+  /* ── Footer ─────────────────────────────────────────── */
+  footer {
+    padding: 14px 20px;
+    color: var(--muted);
+    font-size: 12px;
+    border-top: 1px solid var(--line);
+    margin-top: 8px;
   }
-  footer { padding: 10px 20px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
-  .col { display: grid; gap: 14px; align-content: start; }
+
+  /* ── Help text + inline code ────────────────────────── */
   .help {
-    color: var(--muted); font-size: 12px; margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    margin: 4px 0 10px;
+    line-height: 1.55;
   }
-  /* Non-blocking OTA "go look at your WiFi list" overlay. */
+  .help code, code {
+    background: var(--line-soft);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+  }
+
+  /* ── Checkbox toggle rows ───────────────────────────── */
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+  }
+  .toggle input[type=checkbox] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    margin: 0;
+    flex-shrink: 0;
+  }
+
+  /* ── Progress bar ───────────────────────────────────── */
+  progress {
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    -webkit-appearance: none;
+    appearance: none;
+    border: 1px solid var(--line);
+    background: var(--bg);
+  }
+  progress::-webkit-progress-bar    { background: var(--bg); }
+  progress::-webkit-progress-value  { background: var(--accent); transition: width 100ms; }
+  progress::-moz-progress-bar       { background: var(--accent); }
+
+  /* ── OTA "switch network" overlay ───────────────────── */
   .ota-banner {
     position: fixed; inset: 0;
-    background: rgba(13, 17, 23, 0.72);
+    background: rgba(13, 17, 23, 0.78);
     display: none;
-    pointer-events: none;             /* clicks fall through */
+    pointer-events: none;
     z-index: 9999;
     align-items: center; justify-content: center;
-    backdrop-filter: blur(2px);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    padding: 16px;
   }
   .ota-banner.show { display: flex; }
   .ota-banner .card {
-    padding: 28px 40px;
-    background: #161b22;
+    padding: 28px 36px;
+    background: var(--panel);
     border: 2px solid var(--warn);
     border-radius: 14px;
     color: var(--fg);
@@ -118,39 +396,45 @@
     box-shadow: 0 8px 32px rgba(0,0,0,0.6);
   }
   .ota-banner .title {
-    font-size: 20px; color: var(--warn); font-weight: 600;
+    font-size: 18px; color: var(--warn); font-weight: 600;
     margin-bottom: 10px;
   }
   .ota-banner .ssid {
-    font-family: monospace; font-size: 26px; color: var(--fg);
-    background: #0d1117; padding: 8px 14px; border-radius: 8px;
-    border: 1px solid #30363d; display: inline-block; margin: 8px 0;
+    font-family: var(--font-mono);
+    font-size: 22px; color: var(--fg);
+    background: var(--bg);
+    padding: 8px 14px; border-radius: 8px;
+    border: 1px solid var(--line);
+    display: inline-block;
+    margin: 8px 0;
   }
-  .ota-banner .sub { font-size: 13px; color: var(--muted); margin-top: 12px; }
+  .ota-banner .sub { font-size: 13px; color: var(--muted); margin-top: 14px; }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>Shortor Knob</h1>
-  <span id="status" class="pill bad">Disconnected</span>
-  <select id="transport">
-    <option value="ble">BLE GATT</option>
-    <option value="serial">USB Serial</option>
-  </select>
-  <input id="otaHost" placeholder="192.168.4.1" value="192.168.4.1"
-         title="Knob SoftAP IP — used by Flash firmware" style="width: 130px;">
-  <button id="btnConnect" class="primary">Connect</button>
-  <span style="flex: 1"></span>
-  <span id="liveVoltage">V = —</span>
-  <span id="liveTorque">τ = —</span>
-  <span id="liveTilt" class="stat">tilt = —</span>
-  <span id="modePill" class="pill">— mode</span>
-  <span class="stat" id="liveTap">taps 0/0</span>
-  <span class="stat" id="liveFFWake">ff/wk 0/0</span>
-  <span class="stat" id="liveLoopHz" title="Actual control-loop rate, reported once/sec by the chip">— Hz</span>
-  <span class="stat" id="deviceInfo"></span>
-  <span id="fwBuildPill" class="pill" title="Firmware build tag (HHMM the .bin was compiled)">fw —</span>
+  <div class="hdr-brand">
+    <h1>Shortor Knob</h1>
+    <span id="status" class="pill bad">Disconnected</span>
+    <span class="hdr-grow"></span>
+    <select id="transport" aria-label="Transport">
+      <option value="ble">BLE GATT</option>
+      <option value="serial">USB Serial</option>
+    </select>
+    <button id="btnConnect" class="primary">Connect</button>
+  </div>
+  <div class="hdr-telem">
+    <span id="modePill" class="pill">— mode</span>
+    <span id="liveVoltage" class="pill live">V = —</span>
+    <span id="liveTorque" class="pill live">τ = —</span>
+    <span id="liveTilt" class="pill live">tilt = —</span>
+    <span id="liveTap" class="pill live">taps 0/0</span>
+    <span id="liveFFWake" class="pill live">ff/wk 0/0</span>
+    <span id="liveLoopHz" class="pill live" title="Actual control-loop rate, reported once/sec by the chip">— Hz</span>
+    <span id="deviceInfo" class="pill"></span>
+    <span id="fwBuildPill" class="pill" title="Firmware build tag (HHMM the .bin was compiled)">fw —</span>
+  </div>
 </header>
 
 <main>
@@ -169,18 +453,23 @@
         <code>192.168.4.1</code> starts automatically.
       </p>
       <div class="row">
-        <input type="file" id="firmwareFile" accept=".bin">
+        <label for="otaHost" class="field-label">OTA IP</label>
+        <input type="text" id="otaHost" class="grow" placeholder="192.168.4.1" value="192.168.4.1"
+               title="Knob SoftAP IP — used by Flash firmware">
       </div>
-      <div class="row" style="margin-top: 4px;">
+      <div class="row">
+        <input type="file" id="firmwareFile" class="grow" accept=".bin">
+      </div>
+      <div class="row">
         <span id="fwLabel" class="stat" style="font-size: 11px;">No firmware remembered yet.</span>
       </div>
-      <div class="row" style="margin-top: 8px;">
+      <div class="row">
         <button id="btnFlash" class="primary" disabled title="Connect to the knob first">Flash firmware</button>
         <button id="btnWinding">Winding test</button>
         <button id="btnRecal" class="danger">Recalibrate</button>
       </div>
       <progress id="flashProgress" value="0" max="1"
-                style="width: 100%; display: none; margin-top: 8px;"></progress>
+                style="display: none; margin-top: 10px;"></progress>
     </section>
 
     <section class="card">
@@ -199,18 +488,18 @@
 
     <section class="card">
       <h2>Configure</h2>
-      <label class="row" style="margin-bottom: 6px; gap: 6px;">
+      <label class="toggle">
         <input type="checkbox" id="momentumOn">
         <span>Momentum (virtual flywheel)</span>
       </label>
       <div id="sliders"></div>
       <div class="preset-row" id="presets"></div>
-      <div class="row" style="margin-top: 8px;">
+      <div class="row" style="margin-top: 12px;">
         <button id="btnPushAll">Push all to firmware</button>
         <button id="btnSave" class="primary">Save to flash</button>
         <button id="btnForget">Forget saved</button>
-        <span class="help">Sliders push live; Save persists to NVS.</span>
       </div>
+      <p class="help" style="margin: 8px 0 0;">Sliders push live; Save persists to NVS.</p>
     </section>
 
     <section class="card">
@@ -227,37 +516,33 @@
         <button id="btnCalRot"  title="Rotate the tilt-measurement axis 90° around up_b (cycles through 4 perpendicular axes)">Rotate axis 90°</button>
         <span class="stat" id="calStatus">cal: —</span>
       </div>
-      <div class="row" style="margin-top: 6px;">
-        <label style="display: inline-flex; align-items: center; gap: 6px;"
+      <div class="row" style="margin-top: 8px;">
+        <label class="toggle"
                title="Linear P-controller brakes the wheel past the knee speed. LPF'd input means brief recovery transients pass through untouched — only sustained over-speed (held bot) engages the brake.">
           <input type="checkbox" id="slimOn" checked>
-          Wheel-speed limit when held
+          <span>Wheel-speed limit when held</span>
         </label>
       </div>
       <div id="lqrSliders" style="margin-top: 8px;"></div>
-      <canvas id="balanceCanvas" height="200"
-              style="margin-top: 10px; touch-action: none;"></canvas>
-      <div class="stat" id="balanceInfo" style="margin-top: 4px;"></div>
-      <canvas id="biasCanvas" height="100"
-              style="margin-top: 8px;"></canvas>
-      <div class="stat" id="biasInfo" style="margin-top: 4px;">tbias = —</div>
+      <canvas id="balanceCanvas" height="200" style="margin-top: 12px;"></canvas>
+      <div class="stat" id="balanceInfo" style="margin-top: 6px;"></div>
+      <canvas id="biasCanvas" height="100" style="margin-top: 10px;"></canvas>
+      <div class="stat" id="biasInfo" style="margin-top: 6px;">tbias = —</div>
     </section>
 
     <section class="card">
       <h2>Haptic profile preview</h2>
       <canvas id="profileCanvas" height="200"></canvas>
-      <div class="stat" id="profileInfo" style="margin-top: 6px;"></div>
+      <div class="stat" id="profileInfo" style="margin-top: 8px;"></div>
     </section>
 
     <section class="card">
       <h2>Scroll practice ring</h2>
-      <div class="stat" style="margin-bottom: 6px;">
+      <p class="help" style="margin-bottom: 10px;">
         Hover and scroll inside the ring to feel the knob without
         scrolling the rest of the page.
-      </div>
-      <canvas id="ringCanvas" width="280" height="280"
-              style="display: block; margin: 0 auto; touch-action: none;
-                     cursor: ns-resize;"></canvas>
+      </p>
+      <canvas id="ringCanvas" width="280" height="280"></canvas>
     </section>
   </div>
 </main>
