@@ -148,6 +148,7 @@
   <span id="modePill" class="pill">— mode</span>
   <span class="stat" id="liveTap">taps 0/0</span>
   <span class="stat" id="liveFFWake">ff/wk 0/0</span>
+  <span class="stat" id="liveLoopHz" title="Actual control-loop rate, reported once/sec by the chip">— Hz</span>
   <span class="stat" id="deviceInfo"></span>
   <span id="fwBuildPill" class="pill" title="Firmware build tag (HHMM the .bin was compiled)">fw —</span>
 </header>
@@ -297,15 +298,12 @@ const LQR_PARAMS = [
   { key: "k_xv",    idx: 1, label: "K · shaft vel",   min: 0, max: 0.01, step: 0.0004,  def: 0, fmt: v => v.toFixed(4) },
   { key: "k_th",    idx: 2, label: "K · tilt (rad)",  min: 0, max: 4.5,  step: 0.18,    def: 0, fmt: v => v.toFixed(3) },
   { key: "k_thd",   idx: 3, label: "K · tilt rate",   min: 0, max: 0.15, step: 0.006,   def: 0, fmt: v => v.toFixed(4) },
-  // Setpoint shown as degrees of CIRCULAR TRAJECTORY around the cone
-  // wheel's apex (the fixed pivot of the rolling circle). For a cone
-  // rolling on a flat plane: shaft_rad × sin(α) = traj_rad, where α
-  // is the cone's half-angle. Firmware command Cx takes shaft angle
-  // in rad, so we divide by SHAFT_TO_TRAJ_SCALE × (180/π) on send and
-  // multiply on readback. Sign-flipped so slider direction matches
-  // physical robot motion (firmware shaft-angle convention is
+  // Setpoint shown as linear cart distance (mm). Firmware command Cx
+  // takes shaft angle in rad, so we divide by WHEEL_RADIUS_MM on send
+  // and multiply on readback. Sign-flipped so the slider direction
+  // matches physical robot motion (firmware shaft-angle convention is
   // opposite).
-  { key: "x_ref",   code: "x", label: "Cart setpoint (° trajectory)", min: -180, max: 180, step: 1, def: 0, fmt: v => v.toFixed(0) },
+  { key: "x_ref",   code: "x", label: "Cart setpoint (mm)", min: -100, max: 100, step: 1, def: 0, fmt: v => v.toFixed(0) },
   // Wheel-speed limiter (LPF'd proportional brake). Gates on the
   // `Wheel-speed limit when held` checkbox; sliders set the knee
   // (rad/s) and Kp (V per rad/s of overspeed).
@@ -314,17 +312,8 @@ const LQR_PARAMS = [
 ];
 
 // Firmware native unit for shaft motion is rad. The web app converts
-// to whatever physical unit makes sense for the wheel shape:
-//   • Cylindrical wheel: cart distance in mm via WHEEL_RADIUS_MM
-//     (currently unused — present cone setup overrides this).
-//   • Cone wheel (current): trajectory angle (deg) around the cone's
-//     apex. shaft_rad × sin(α) = traj_rad, where α is the half-angle
-//     of the cone (the bot also leans at α). The big-end diameter is
-//     kept here for reference; the conversion math doesn't need it.
-const WHEEL_RADIUS_MM     = 27.5;
-const CONE_HALF_ANGLE_DEG = 15;
-const CONE_BIG_DIAM_MM    = 55;
-const SHAFT_TO_TRAJ_SCALE = Math.sin(CONE_HALF_ANGLE_DEG * Math.PI / 180);
+// to cart distance in mm: distance_mm = shaft_rad × WHEEL_RADIUS_MM.
+const WHEEL_RADIUS_MM = 27.5;
 
 const PRESETS = {
   Subtle:   { detent_n: 24, detent_a: 2,  detent_k: 0.2, b_damp: 0.03 },
@@ -421,6 +410,7 @@ class BleTransport {
         const dv = ev.target.value;
         const angle = dv.getFloat32(0, true);
         onLiveAngle(angle);
+        balanceLive.shaftAngle = angle;
         if (dv.byteLength >= 12) {
           const vbus   = dv.getFloat32(4, true);
           const torque = dv.getFloat32(8, true);
@@ -471,6 +461,19 @@ class BleTransport {
       await this.event.startNotifications();
       this.event.addEventListener("characteristicvaluechanged", (ev) => {
         const text = new TextDecoder().decode(ev.target.value);
+        // RATE: <motor-hz> [main=<main-hz>] updates the speedometer
+        // silently (would otherwise spam the console at 1 Hz). Main
+        // loop rate is the IMU sampling rate — if it drops, K_theta /
+        // K_thd headroom drops with it.
+        if (text && text.startsWith("RATE:")) {
+          const m  = text.match(/RATE:\s*([\d.]+)/);
+          const mn = text.match(/main=([\d.]+)/);
+          const el = document.getElementById("liveLoopHz");
+          if (el && m) {
+            el.textContent = mn ? `${m[1]}/${mn[1]} Hz` : `${m[1]} Hz`;
+          }
+          return;
+        }
         log("← " + (text || "(empty event)"));
       });
       log("Subscribed to FOC event channel.", "ok");
@@ -641,9 +644,9 @@ function applyParamsString(raw) {
     let v = parseFloat(valStr);
     const slider_key = map[k];
     if (!slider_key || Number.isNaN(v)) continue;
-    // Firmware reports xref in shaft rad; UI shows trajectory deg.
+    // Firmware reports xref in shaft rad; UI shows mm.
     // Sign-flipped so the slider direction matches physical motion.
-    if (slider_key === "x_ref") v = -v * SHAFT_TO_TRAJ_SCALE * 180 / Math.PI;
+    if (slider_key === "x_ref") v = -v * WHEEL_RADIUS_MM;
     if (sliderEls[slider_key]) {
       paramState[slider_key] = v;
       sliderEls[slider_key].value = v;
@@ -1180,12 +1183,10 @@ setInterval(async () => {
       if (val && typeof val === "object" && val.kind === "g") {
         line = `Cg${val.idx}${val.val}\n`;
       } else if (val && typeof val === "object" && val.kind === "x") {
-        // UI uses deg of trajectory (rotation around the cone apex);
-        // firmware expects shaft angle in rad. shaft_rad =
-        // traj_rad / sin(α) = traj_deg × π / (180·sin(α)). Sign-flipped
-        // to match the physical-forward convention (firmware shaft
-        // sign is opposite).
-        line = `Cx${-val.val * Math.PI / (180 * SHAFT_TO_TRAJ_SCALE)}\n`;
+        // UI uses mm; firmware expects shaft angle in rad.
+        // shaft_rad = mm / WHEEL_RADIUS_MM. Sign-flipped to match the
+        // physical-forward convention (firmware shaft sign is opposite).
+        line = `Cx${-val.val / WHEEL_RADIUS_MM}\n`;
       } else if (val && typeof val === "object" && val.kind === "C") {
         // Plain-coded LQR-card param (speed-limit knee + Kp).
         line = `C${val.code}${val.val}\n`;
@@ -1280,7 +1281,7 @@ async function pushAllParams() {
     const v = lqrState[p.key];
     let line;
     if (typeof p.idx === "number") line = `Cg${p.idx}${v}\n`;
-    else if (p.code === "x")       line = `Cx${-v * Math.PI / (180 * SHAFT_TO_TRAJ_SCALE)}\n`;
+    else if (p.code === "x")       line = `Cx${-v / WHEEL_RADIUS_MM}\n`;
     else if (p.code)               line = `C${p.code}${v}\n`;
     else continue;
     try { await transport.writeCmd(line); }
@@ -1515,10 +1516,10 @@ drawRing();
 // position is meaningless then.
 const balanceCanvas = document.getElementById("balanceCanvas");
 const balanceInfo   = document.getElementById("balanceInfo");
-const balanceLive   = { tilt: 0, posErrSat: 0, mode: 0 };
+const balanceLive   = { tilt: 0, posErrSat: 0, mode: 0, shaftAngle: 0 };
 let balanceRaf = 0;
 const POS_SAT_RAD = 0.5 * Math.PI; // matches firmware POS_ABS_CAP (±0.25 rev)
-const POS_SAT_DEG = POS_SAT_RAD * SHAFT_TO_TRAJ_SCALE * 180 / Math.PI;  // ≈ 23.3°
+const POS_SAT_MM  = POS_SAT_RAD * WHEEL_RADIUS_MM;  // ≈ 43.2 mm
 
 function drawBalance() {
   balanceRaf = 0;
@@ -1534,22 +1535,18 @@ function drawBalance() {
   const trackHalf = (W / 2) - margin;
   const poleLen = (H - 60 * dpr) * 0.85;
   const dim = (balanceLive.mode === 1) ? 1.0 : 0.35;
-  // Absolute display axis in degrees of trajectory rotation around the
-  // cone's apex. Sized to fit slider ±180° + saturation ±23.3° ≈ ±203°.
-  const X_RANGE_DEG = 210;
-  const pxPerDeg    = trackHalf / X_RANGE_DEG;
-  // Wheel drawn at a fixed visual size — the spoke rotates at the true
-  // shaft angle (shaft_rad = traj_rad / sin(α)) so it visibly spins
-  // ~3.86× per unit trajectory motion for a 15° cone, which matches
-  // physical reality.
+  // Absolute display axis in mm of linear cart travel. Sized to fit
+  // slider ±100 mm + saturation ±43.2 mm ≈ ±143 mm with some headroom.
+  const X_RANGE_MM = 150;
+  const pxPerMm    = trackHalf / X_RANGE_MM;
   const wheelR     = 28 * dpr;
 
-  // User-frame setpoint (deg trajectory) and tracking error (deg,
-  // sign-flipped from chip shaft-rad frame to match physical direction).
-  const setDeg   = (typeof lqrState !== "undefined" && lqrState.x_ref) ? lqrState.x_ref : 0;
-  const errDeg   = -balanceLive.posErrSat * SHAFT_TO_TRAJ_SCALE * 180 / Math.PI;
-  const cartDeg  = setDeg + errDeg;
-  const satDeg   = POS_SAT_DEG;
+  // User-frame setpoint (mm) and tracking error (mm, sign-flipped from
+  // chip shaft-rad frame to match physical direction).
+  const setMm   = (typeof lqrState !== "undefined" && lqrState.x_ref) ? lqrState.x_ref : 0;
+  const errMm   = -balanceLive.posErrSat * WHEEL_RADIUS_MM;
+  const cartMm  = setMm + errMm;
+  const satMm   = POS_SAT_MM;
 
   // Ground line.
   ctx.strokeStyle = `rgba(99, 110, 123, ${dim})`;
@@ -1559,30 +1556,31 @@ function drawBalance() {
   ctx.lineTo(W - margin, groundY);
   ctx.stroke();
 
-  // Tick marks every 1° across the absolute axis. Tick height steps
-  // up at the 10°/30°/60° boundaries so the ruler stays readable even
-  // with the dense minor ticks; labels at the 30° majors only.
+  // Tick marks every 1 mm across the absolute axis. Heights step up
+  // at 5/10/50 mm so the ruler stays readable even with dense minor
+  // ticks; labels at the 50 mm majors only.
   ctx.strokeStyle = `rgba(99, 110, 123, ${0.6 * dim})`;
   ctx.fillStyle   = `rgba(139, 148, 158, ${dim})`;
   ctx.font = `${10 * dpr}px monospace`;
   ctx.textAlign = "center";
-  for (let deg = -210; deg <= 210; deg += 1) {
-    const x = cx0 + deg * pxPerDeg;
+  for (let mm = -150; mm <= 150; mm += 1) {
+    const x = cx0 + mm * pxPerMm;
     let tickH;
-    if      (deg === 0)       tickH = 9 * dpr;
-    else if (deg % 30 === 0)  tickH = 7 * dpr;
-    else if (deg % 10 === 0)  tickH = 4 * dpr;
+    if      (mm === 0)        tickH = 9 * dpr;
+    else if (mm % 50 === 0)   tickH = 7 * dpr;
+    else if (mm % 10 === 0)   tickH = 4 * dpr;
+    else if (mm %  5 === 0)   tickH = 3 * dpr;
     else                      tickH = 2 * dpr;
     ctx.beginPath(); ctx.moveTo(x, groundY); ctx.lineTo(x, groundY + tickH); ctx.stroke();
-    if (deg % 30 === 0) ctx.fillText(`${deg}°`, x, groundY + 20 * dpr);
+    if (mm % 50 === 0) ctx.fillText(`${mm}`, x, groundY + 20 * dpr);
   }
 
-  // Saturation boundaries at setpoint ± satDeg (move with setpoint).
+  // Saturation boundaries at setpoint ± satMm (move with setpoint).
   ctx.strokeStyle = `rgba(248, 81, 73, ${0.55 * dim})`;
   ctx.setLineDash([4 * dpr, 4 * dpr]);
   ctx.lineWidth = 1 * dpr;
   for (const s of [-1, 1]) {
-    const x = cx0 + (setDeg + s * satDeg) * pxPerDeg;
+    const x = cx0 + (setMm + s * satMm) * pxPerMm;
     ctx.beginPath();
     ctx.moveTo(x, groundY - poleLen - 20 * dpr);
     ctx.lineTo(x, groundY + 8 * dpr);
@@ -1591,7 +1589,7 @@ function drawBalance() {
   ctx.setLineDash([]);
 
   // Setpoint marker — solid vertical line + flag at the top.
-  const setX = cx0 + setDeg * pxPerDeg;
+  const setX = cx0 + setMm * pxPerMm;
   ctx.strokeStyle = `rgba(63, 185, 80, ${0.85 * dim})`;
   ctx.lineWidth = 2 * dpr;
   ctx.beginPath();
@@ -1606,8 +1604,45 @@ function drawBalance() {
   ctx.closePath();
   ctx.fill();
 
-  // Wheel (cart) at absolute position cartDeg (trajectory).
-  const wx = cx0 + cartDeg * pxPerDeg;
+  // True physical position from raw shaft_angle (unsaturated). This
+  // is where the bot actually IS; cartMm above is what the controller
+  // *thinks* it is (delta-saturated tracker). The visible gap between
+  // them is the anti-windup error the slow drift is closing.
+  const trueMm = -balanceLive.shaftAngle * WHEEL_RADIUS_MM;
+  const gapMm  = trueMm - cartMm;
+
+  // Red bar on the ground spanning the controller↔truth gap. Drawn
+  // before the wheel so the wheel sits on top.
+  if (Math.abs(gapMm) > 0.5) {
+    const ctrlX = cx0 + cartMm * pxPerMm;
+    const trueX = cx0 + trueMm * pxPerMm;
+    ctx.strokeStyle = `rgba(248, 81, 73, ${0.85 * dim})`;
+    ctx.lineWidth   = 5 * dpr;
+    ctx.lineCap     = "round";
+    ctx.beginPath();
+    ctx.moveTo(ctrlX, groundY);
+    ctx.lineTo(trueX, groundY);
+    ctx.stroke();
+    ctx.lineCap = "butt";
+  }
+
+  // Dashed marker showing the controller's perceived cart position.
+  const ctrlX = cx0 + cartMm * pxPerMm;
+  ctx.strokeStyle = `rgba(248, 81, 73, ${0.8 * dim})`;
+  ctx.lineWidth   = 1.5 * dpr;
+  ctx.setLineDash([4 * dpr, 4 * dpr]);
+  ctx.beginPath();
+  ctx.moveTo(ctrlX, groundY - poleLen * 0.65);
+  ctx.lineTo(ctrlX, groundY + 6 * dpr);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle  = `rgba(248, 81, 73, ${0.85 * dim})`;
+  ctx.font       = `${10 * dpr}px monospace`;
+  ctx.textAlign  = "center";
+  ctx.fillText("ctrl", ctrlX, groundY - poleLen * 0.65 - 4 * dpr);
+
+  // Wheel (cart) drawn at the TRUE position.
+  const wx = cx0 + trueMm * pxPerMm;
   const wy = groundY - wheelR;
 
   // Pole tipped by tilt angle (clamped to ±90° for drawing sanity).
@@ -1629,9 +1664,9 @@ function drawBalance() {
   ctx.strokeStyle = (balanceLive.mode === 1) ? "#3fb950" : `rgba(99, 110, 123, ${dim})`;
   ctx.lineWidth = 2 * dpr;
   ctx.beginPath(); ctx.arc(wx, wy, wheelR, 0, 2 * Math.PI); ctx.stroke();
-  // Wheel "spoke" — driven by the true shaft angle, which for a cone
-  // wheel runs 1/sin(α) faster than the trajectory motion.
-  const spokeA = cartDeg * Math.PI / (180 * SHAFT_TO_TRAJ_SCALE);
+  // Wheel spoke driven by the TRUE shaft angle. Sign-flipped to match
+  // the slider's physical-forward convention.
+  const spokeA = -balanceLive.shaftAngle;
   ctx.beginPath();
   ctx.moveTo(wx, wy);
   ctx.lineTo(wx + Math.cos(spokeA) * (wheelR - 2 * dpr),
@@ -1643,9 +1678,11 @@ function drawBalance() {
     const tDeg = (balanceLive.tilt * 180 / Math.PI).toFixed(1);
     const satFlag = Math.abs(balanceLive.posErrSat) > POS_SAT_RAD - 1e-3 ? "  [SAT]" : "";
     balanceInfo.textContent =
-      `cart = ${cartDeg.toFixed(1)}°   `
-      + `setpoint = ${setDeg.toFixed(0)}°   `
-      + `err = ${errDeg.toFixed(1)}°${satFlag}   `
+      `cart = ${trueMm.toFixed(1)} mm   `
+      + `ctrl = ${cartMm.toFixed(1)} mm   `
+      + `Δ = ${gapMm.toFixed(1)} mm   `
+      + `setpoint = ${setMm.toFixed(0)} mm   `
+      + `err = ${errMm.toFixed(1)} mm${satFlag}   `
       + `tilt = ${tDeg}°   mode = ${balanceLive.mode === 1 ? "BALANCE" : "haptic"}`;
   }
 }
