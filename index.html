@@ -466,6 +466,7 @@
       <div class="row">
         <button id="btnFlash" class="primary" disabled title="Connect to the knob first">Flash firmware</button>
         <button id="btnWinding">Winding test</button>
+        <button id="btnDumpNvs" title="Print the full persisted NVS to the console (for baking defaults into firmware)">Dump NVS</button>
         <button id="btnRecal" class="danger">Recalibrate</button>
       </div>
       <progress id="flashProgress" value="0" max="1"
@@ -1179,6 +1180,15 @@ document.getElementById("btnRecal").onclick = async () => {
     await transport.writeCmd("L\n");
     log("Recal sent — wiping cached alignment and rebooting.", "ok");
   } catch (e) { log("Recal failed: " + e.message, "bad"); }
+};
+
+document.getElementById("btnDumpNvs").onclick = async () => {
+  if (!transport || !transport.isConnected())
+    return log("Not connected.", "bad");
+  try {
+    await transport.writeCmd("Z\n");
+    log("NVS dump requested — the 'NVS …' line will arrive on the event channel.", "ok");
+  } catch (e) { log("NVS dump failed: " + e.message, "bad"); }
 };
 // Hybrid flash: BLE for control, SoftAP+HTTP for the bulk transfer.
 //   1. Send Y over the active transport → chip reboots into WiFi mode.
