@@ -580,7 +580,7 @@ const PARAMS = [
 const LQR_PARAMS = [
   // All sliders give 25 detents from min→max (step = range/25).
   { key: "k_x",     idx: 0, label: "K · shaft pos",   min: 0, max: 1.0,  step: 0.04,    def: 0, fmt: v => v.toFixed(3) },
-  { key: "k_xv",    idx: 1, label: "K · shaft vel",   min: 0, max: 0.01, step: 0.0004,  def: 0, fmt: v => v.toFixed(4) },
+  { key: "k_xv",    idx: 1, label: "K · shaft vel",   min: 0, max: 0.1, step: 0.004,  def: 0, fmt: v => v.toFixed(4) },
   { key: "k_th",    idx: 2, label: "K · tilt (rad)",  min: 0, max: 9.0,  step: 0.36,    def: 0, fmt: v => v.toFixed(3) },
   { key: "k_thd",   idx: 3, label: "K · tilt rate",   min: 0, max: 0.30, step: 0.012,   def: 0, fmt: v => v.toFixed(4) },
   // Setpoint shown as linear cart distance (mm). Firmware command Cx
