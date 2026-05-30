@@ -574,6 +574,14 @@ const PARAMS = [
   { key: "b_damp",   code: "D", label: "Viscous damp (V/(rad/s))", min: 0,   max: 0.25, step: 0.001,def: 0.06, fmt: v => v.toFixed(4)   },
   { key: "j_virt",   code: "J", label: "Flywheel inertia J",       min: 0,   max: 0.3,  step: 0.001,def: 0.03, fmt: v => v.toFixed(3)   },
   { key: "b_couple", code: "C", label: "Flywheel coupling B_c",    min: 0,   max: 0.3,  step: 0.001,def: 0,    fmt: v => v.toFixed(3)   },
+  // Shaft-velocity LPF cutoff used ONLY in haptic mode (feeds the detent
+  // viscous damping + virtual-flywheel admittance). Log-scaled like the
+  // balance-pane LPF sliders — `code` maps to the firmware `CH<hz>`
+  // command. The balance-mode shaft-vel LPF is a separate knob in the
+  // balancer pane (`fc_shaft_vel`, CF).
+  { key: "fc_shaft_vel_hap", code: "H", label: "LPF: shaft vel (Hz)",
+    scale: "log", lo: 1, hi: 300, min: 0, max: 100, step: 0.5,
+    def: 39.6, fmt: v => `${v < 10 ? v.toFixed(1) : v.toFixed(0)}` },
 ];
 
 // Balance-mode LQR gains + position setpoint. Indexed for `Cg<i><f>`
@@ -931,7 +939,7 @@ function applyParamsString(raw) {
                 k0: "k_x", k1: "k_xv", k2: "k_th", k3: "k_thd",
                 xref: "x_ref",
                 sV: "slim_v_max", sP: "slim_kp",
-                fcV: "fc_shaft_vel", fcT: "fc_tilt" };
+                fcV: "fc_shaft_vel", fcVH: "fc_shaft_vel_hap", fcT: "fc_tilt" };
   for (const part of raw.trim().split(/\s+/)) {
     const eq = part.indexOf("=");
     if (eq <= 0) continue;
@@ -966,10 +974,12 @@ function applyParamsString(raw) {
     // Sign-flipped so the slider direction matches physical motion.
     if (slider_key === "x_ref") v = -v * WHEEL_RADIUS_MM;
     if (sliderEls[slider_key]) {
+      const p = PARAMS.find(x => x.key === slider_key);
       paramState[slider_key] = v;
-      sliderEls[slider_key].value = v;
+      // Slider value is slider-space; translate for log-scaled params
+      // (lpfSliderOf is identity for linear ones).
+      sliderEls[slider_key].value = p ? lpfSliderOf(p, v) : v;
       if (sliderValueEls[slider_key]) {
-        const p = PARAMS.find(x => x.key === slider_key);
         sliderValueEls[slider_key].textContent = p ? p.fmt(v) : v;
       }
     } else if (lqrSliderEls[slider_key]) {
@@ -1447,12 +1457,15 @@ for (const p of PARAMS) {
   const val = document.createElement("span"); val.className = "value";
   const sld = document.createElement("input");
   sld.type = "range"; sld.min = p.min; sld.max = p.max; sld.step = p.step;
-  sld.value = paramState[p.key];
+  // Slider position is in slider-space (linear 0..100 for log-scaled
+  // params); paramState always stores the actual value (Hz, V, …).
+  // lpfSliderOf/lpfValueOf are identity for non-log params.
+  sld.value = lpfSliderOf(p, paramState[p.key]);
   row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
   slidersEl.appendChild(row);
   sliderEls[p.key] = sld; sliderValueEls[p.key] = val;
-  val.textContent = p.fmt(parseFloat(sld.value));
-  sld.addEventListener("input", () => onParamChange(p, parseFloat(sld.value)));
+  val.textContent = p.fmt(lpfValueOf(p, parseFloat(sld.value)));
+  sld.addEventListener("input", () => onParamChange(p, lpfValueOf(p, parseFloat(sld.value))));
 }
 
 let pendingSends = {};
@@ -1653,8 +1666,9 @@ for (const [name, vals] of Object.entries(PRESETS)) {
     }
     for (const [k, v] of Object.entries(vals)) {
       if (sliderEls[k]) {
-        sliderEls[k].value = v;
-        onParamChange(PARAMS.find(p => p.key === k), v);
+        const p = PARAMS.find(x => x.key === k);
+        sliderEls[k].value = lpfSliderOf(p, v);
+        onParamChange(p, v);
       }
     }
     log(`Applied preset: ${name}`, "ok");
