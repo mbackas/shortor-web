@@ -83,6 +83,21 @@
     .hdr-telem::-webkit-scrollbar { display: none; }
   }
 
+  /* ── OTA flash progress — full-width bar at the header's bottom edge ── */
+  #flashProgress {
+    display: block;            /* JS reveals via style.display="" → this */
+    width: 100%;
+    height: 4px;
+    margin: 0;
+    border: none;
+    background: var(--line-soft);
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  #flashProgress::-webkit-progress-bar   { background: var(--line-soft); }
+  #flashProgress::-webkit-progress-value { background: var(--accent); transition: width 120ms; }
+  #flashProgress::-moz-progress-bar      { background: var(--accent); }
+
   /* ── Pills ──────────────────────────────────────────── */
   .pill {
     display: inline-flex;
@@ -480,6 +495,10 @@
     <span id="modePill" class="pill">— mode</span>
     <span id="liveVoltage" class="pill live">V = —</span>
   </div>
+  <!-- OTA flash progress — pinned to the very top (in the sticky header)
+       so it's visible during a flash no matter where you've scrolled or
+       whether the Firmware section is expanded. Hidden until a flash. -->
+  <progress id="flashProgress" value="0" max="1" style="display: none;"></progress>
 </header>
 
 <main>
@@ -599,8 +618,6 @@
         <button id="btnFlash" class="primary" disabled title="Connect to the knob first">Flash firmware</button>
         <button id="btnRecal" class="danger needs-conn">Recalibrate</button>
       </div>
-      <progress id="flashProgress" value="0" max="1"
-                style="display: none; margin-top: 10px;"></progress>
     </div>
   </details>
 
@@ -1161,11 +1178,22 @@ function setStatus(ok, name) {
     statusEl.textContent = "Disconnected"; statusEl.className = "pill bad";
     btnConnect.textContent = "Connect";
     deviceInfoEl.textContent = "";
-    const fw = document.getElementById("fwBuildPill");
-    if (fw) fw.textContent = "fw —";
-    document.getElementById("liveTorque").textContent = "τ = —";
-    const vEl = document.getElementById("liveVoltage");
-    if (vEl) vEl.textContent = "V = —";
+    // Blank EVERY live readout so a dropped link doesn't leave stale
+    // telemetry frozen on screen looking live.
+    const blanks = {
+      liveVoltage: "V = —", liveTorque: "τ = —", liveTilt: "tilt = —",
+      liveTap: "taps —/—", liveFFWake: "ff/wk —/—", liveLoopHz: "— Hz",
+      fwBuildPill: "fw —",
+    };
+    for (const [id, txt] of Object.entries(blanks)) {
+      const el = document.getElementById(id); if (el) el.textContent = txt;
+    }
+    updateModePill(-1);   // → "— mode", neutral class
+    // Neutralize the balance visual so it doesn't hold the last pose.
+    if (typeof balanceLive !== "undefined") {
+      balanceLive.tilt = 0; balanceLive.posErrSat = 0; balanceLive.mode = 0; balanceLive.shaftAngle = 0;
+      if (typeof drawBalance === "function" && !balanceRaf) balanceRaf = requestAnimationFrame(drawBalance);
+    }
     if (flashBtn) { flashBtn.disabled = true; flashBtn.title = "Connect to the knob first"; }
   }
 }
