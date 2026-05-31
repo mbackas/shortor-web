@@ -137,22 +137,23 @@
   button.danger  { background: #4d1a1f; border-color: var(--bad);  color: #ffb5af; }
   button.danger:hover:not(:disabled) { border-color: #ff7b72; }
 
-  /* ── Main grid ──────────────────────────────────────── */
+  /* ── Main column ────────────────────────────────────── */
+  /* Single task-ordered column: hero (Tune) first, advanced/dev
+     sections live in collapsed <details> further down. */
   main {
-    display: grid;
-    grid-template-columns: 260px minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
     gap: var(--gap);
     padding: var(--gap) 10px;
-    max-width: 1100px;
+    max-width: 820px;
     margin: 0 auto;
   }
   @media (max-width: 880px) {
-    main { grid-template-columns: 1fr; padding: 8px; gap: 8px; }
+    main { padding: 8px; gap: 8px; }
   }
-  .col { display: grid; gap: var(--gap); align-content: start; min-width: 0; }
 
   /* ── Cards ──────────────────────────────────────────── */
-  section.card {
+  section.card, details.card {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: var(--radius);
@@ -165,6 +166,57 @@
     letter-spacing: 0.08em;
     color: var(--muted);
     font-weight: 600;
+  }
+
+  /* ── Collapsible (advanced/dev) sections ────────────── */
+  details.card { padding: 0; }
+  details.card > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    font-weight: 600;
+    user-select: none;
+  }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card > summary::before {
+    content: "›";
+    display: inline-block;
+    font-size: 13px;
+    line-height: 1;
+    transition: transform 120ms;
+    color: var(--muted);
+  }
+  details.card[open] > summary::before { transform: rotate(90deg); }
+  details.card > summary:hover { color: var(--fg); }
+  details.card > summary .sub {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    color: var(--line);
+    margin-left: auto;
+  }
+  details.card > .body { padding: 0 10px 10px; }
+
+  /* ── Connect hint + connection gating ───────────────── */
+  #connectHint {
+    background: rgba(31, 111, 235, 0.10);
+    border: 1px solid rgba(88, 166, 255, 0.4);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    color: var(--accent-hi);
+  }
+  body.connected #connectHint { display: none; }
+  /* Actions that need a live link are dimmed + inert until connected. */
+  body:not(.connected) .needs-conn {
+    opacity: 0.45;
+    pointer-events: none;
   }
 
   /* ── Rows / utilities ───────────────────────────────── */
@@ -427,22 +479,102 @@
   <div class="hdr-telem">
     <span id="modePill" class="pill">— mode</span>
     <span id="liveVoltage" class="pill live">V = —</span>
-    <span id="liveTorque" class="pill live">τ = —</span>
-    <span id="liveTilt" class="pill live">tilt = —</span>
-    <span id="liveTap" class="pill live">taps 0/0</span>
-    <span id="liveFFWake" class="pill live">ff/wk 0/0</span>
-    <span id="liveLoopHz" class="pill live" title="Actual control-loop rate, reported once/sec by the chip">— Hz</span>
-    <span id="deviceInfo" class="pill"></span>
-    <span id="fwBuildPill" class="pill" title="Firmware build tag (HHMM the .bin was compiled)">fw —</span>
   </div>
 </header>
 
 <main>
-  <!-- Left column -->
-  <div class="col">
 
-    <section class="card">
-      <h2>Firmware</h2>
+  <div id="connectHint">
+    Connect your Shortor knob (button, top-right) to tune and balance.
+    You can stage tuning and presets offline — saving to the knob needs a
+    connection.
+  </div>
+
+  <!-- HERO: everyday tuning -->
+  <section class="card">
+    <h2>Tune</h2>
+    <label class="toggle">
+      <input type="checkbox" id="momentumOn">
+      <span>Momentum (virtual flywheel)</span>
+    </label>
+    <div id="sliders"></div>
+    <div class="preset-row" id="presets"></div>
+    <div class="preset-row" style="margin-top: 4px;">
+      <button id="btnSavePreset" class="needs-conn">Save preset…</button>
+      <button id="btnResetPresets" class="needs-conn">Reset presets</button>
+    </div>
+    <div class="row" style="margin-top: 12px;">
+      <button id="btnSave" class="primary needs-conn">Save to knob</button>
+      <button id="btnForget" class="needs-conn">Reset tuning</button>
+    </div>
+    <p class="help" style="margin: 8px 0 0;">Sliders push live to the knob as you move them; <b>Save to knob</b> persists them to its memory so they survive a power cycle. Presets are stored on the knob too.</p>
+  </section>
+
+  <section class="card">
+    <h2>Haptic profile preview</h2>
+    <canvas id="profileCanvas" height="200"></canvas>
+    <div class="stat" id="profileInfo" style="margin-top: 8px;"></div>
+  </section>
+
+  <section class="card">
+    <h2>Scroll practice ring</h2>
+    <p class="help" style="margin-bottom: 10px;">
+      Hover and scroll inside the ring to feel the knob without
+      scrolling the rest of the page.
+    </p>
+    <canvas id="ringCanvas" width="280" height="280"></canvas>
+  </section>
+
+  <!-- Secondary mode -->
+  <details class="card" id="secBalance">
+    <summary>Balancing <span class="sub">upright mode</span></summary>
+    <div class="body">
+      <p class="help">
+        4-state LQR feedback: <code>u = -K·(x − x_ref)</code> over
+        <code>[shaft, ṡhaft, tilt, ṫilt]</code>. Active only when the
+        bot is upright (auto-detected from gravity). Calibrate both
+        poses first so tilt is yaw-agnostic.
+      </p>
+      <div class="row">
+        <button id="btnCalUp" class="needs-conn">Calibrate Upright</button>
+        <button id="btnCalFlat" class="needs-conn">Calibrate Flat</button>
+        <button id="btnCalRot" class="needs-conn" title="Rotate the tilt-measurement axis 90° around up_b (cycles through 4 perpendicular axes)">Rotate axis 90°</button>
+        <span class="stat" id="calStatus">cal: —</span>
+      </div>
+      <div id="lqrSliders" style="margin-top: 8px;"></div>
+      <canvas id="balanceCanvas" height="200" style="margin-top: 12px;"></canvas>
+      <div class="stat" id="balanceInfo" style="margin-top: 6px;"></div>
+      <canvas id="biasCanvas" height="100" style="margin-top: 10px;"></canvas>
+      <div class="stat" id="biasInfo" style="margin-top: 6px;">tbias = —</div>
+    </div>
+  </details>
+
+  <!-- Live instrumentation + dev tools -->
+  <details class="card" id="secDiag">
+    <summary>Diagnostics <span class="sub">live data &amp; console</span></summary>
+    <div class="body">
+      <div class="row" style="margin-bottom: 8px;">
+        <span id="liveTorque" class="pill live">τ = —</span>
+        <span id="liveTilt" class="pill live">tilt = —</span>
+        <span id="liveTap" class="pill live">taps 0/0</span>
+        <span id="liveFFWake" class="pill live">ff/wk 0/0</span>
+        <span id="liveLoopHz" class="pill live" title="Actual control-loop rate, reported once/sec by the chip">— Hz</span>
+        <span id="deviceInfo" class="pill"></span>
+        <span id="fwBuildPill" class="pill" title="Firmware build tag (HHMM the .bin was compiled)">fw —</span>
+      </div>
+      <canvas id="torqueCanvas" height="170"></canvas>
+      <pre id="console" style="margin-top: 8px;"></pre>
+      <div class="row" style="margin-top: 8px;">
+        <button id="btnWinding" class="needs-conn">Winding test</button>
+        <button id="btnDumpNvs" class="needs-conn" title="Print the full persisted NVS to the console (for baking defaults into firmware)">Dump NVS</button>
+      </div>
+    </div>
+  </details>
+
+  <!-- Firmware / OTA (rare, expert) -->
+  <details class="card" id="secFw">
+    <summary>Firmware update <span class="sub">OTA</span></summary>
+    <div class="body">
       <p class="help">
         Hybrid OTA: BLE for control, WiFi for the binary. Pick a
         <code>firmware.bin</code> once and the browser remembers it
@@ -465,84 +597,13 @@
       </div>
       <div class="row">
         <button id="btnFlash" class="primary" disabled title="Connect to the knob first">Flash firmware</button>
-        <button id="btnWinding">Winding test</button>
-        <button id="btnDumpNvs" title="Print the full persisted NVS to the console (for baking defaults into firmware)">Dump NVS</button>
-        <button id="btnRecal" class="danger">Recalibrate</button>
+        <button id="btnRecal" class="danger needs-conn">Recalibrate</button>
       </div>
       <progress id="flashProgress" value="0" max="1"
                 style="display: none; margin-top: 10px;"></progress>
-    </section>
+    </div>
+  </details>
 
-    <section class="card">
-      <h2>Console</h2>
-      <pre id="console"></pre>
-    </section>
-  </div>
-
-  <!-- Right column -->
-  <div class="col">
-
-    <section class="card">
-      <h2>Live torque (V)</h2>
-      <canvas id="torqueCanvas" height="170"></canvas>
-    </section>
-
-    <section class="card">
-      <h2>Configure</h2>
-      <label class="toggle">
-        <input type="checkbox" id="momentumOn">
-        <span>Momentum (virtual flywheel)</span>
-      </label>
-      <div id="sliders"></div>
-      <div class="preset-row" id="presets"></div>
-      <div class="preset-row" style="margin-top: 4px;">
-        <button id="btnSavePreset">Save preset…</button>
-        <button id="btnResetPresets">Reset presets</button>
-      </div>
-      <div class="row" style="margin-top: 12px;">
-        <button id="btnPushAll">Push all to firmware</button>
-        <button id="btnSave" class="primary">Save to flash</button>
-        <button id="btnForget">Forget saved</button>
-      </div>
-      <p class="help" style="margin: 8px 0 0;">Sliders push live; Save persists params to NVS. Presets are stored on the knob too.</p>
-    </section>
-
-    <section class="card">
-      <h2>Balancer (upright mode)</h2>
-      <p class="help">
-        4-state LQR feedback: <code>u = -K·(x − x_ref)</code> over
-        <code>[shaft, ṡhaft, tilt, ṫilt]</code>. Active only when the
-        bot is upright (auto-detected from gravity). Calibrate both
-        poses first so tilt is yaw-agnostic.
-      </p>
-      <div class="row">
-        <button id="btnCalUp">Calibrate Upright</button>
-        <button id="btnCalFlat">Calibrate Flat</button>
-        <button id="btnCalRot"  title="Rotate the tilt-measurement axis 90° around up_b (cycles through 4 perpendicular axes)">Rotate axis 90°</button>
-        <span class="stat" id="calStatus">cal: —</span>
-      </div>
-      <div id="lqrSliders" style="margin-top: 8px;"></div>
-      <canvas id="balanceCanvas" height="200" style="margin-top: 12px;"></canvas>
-      <div class="stat" id="balanceInfo" style="margin-top: 6px;"></div>
-      <canvas id="biasCanvas" height="100" style="margin-top: 10px;"></canvas>
-      <div class="stat" id="biasInfo" style="margin-top: 6px;">tbias = —</div>
-    </section>
-
-    <section class="card">
-      <h2>Haptic profile preview</h2>
-      <canvas id="profileCanvas" height="200"></canvas>
-      <div class="stat" id="profileInfo" style="margin-top: 8px;"></div>
-    </section>
-
-    <section class="card">
-      <h2>Scroll practice ring</h2>
-      <p class="help" style="margin-bottom: 10px;">
-        Hover and scroll inside the ring to feel the knob without
-        scrolling the rest of the page.
-      </p>
-      <canvas id="ringCanvas" width="280" height="280"></canvas>
-    </section>
-  </div>
 </main>
 
 <footer>
@@ -567,17 +628,17 @@ const PRESETS_UUID  = "e69a0006-1234-5678-9abc-def012345678";
 // ─── Parameter metadata ─────────────────────────────────────────────────────
 const PARAMS = [
   { key: "detent_n", code: "N", label: "Detents / rev",            min: 1,   max: 400,  step: 1,    def: 12,   fmt: v => v.toFixed(0)   },
-  { key: "detent_a", code: "A", label: "Sharpness α",              min: 0.1, max: 8,    step: 0.1,  def: 5,    fmt: v => v.toFixed(2)   },
-  { key: "detent_k", code: "K", label: "Click strength (V)",       min: 0,   max: 5,    step: 0.01, def: 1.5,  fmt: v => v.toFixed(3)   },
-  { key: "b_damp",   code: "D", label: "Viscous damp (V/(rad/s))", min: 0,   max: 0.25, step: 0.001,def: 0.06, fmt: v => v.toFixed(4)   },
-  { key: "j_virt",   code: "J", label: "Flywheel inertia J",       min: 0,   max: 0.3,  step: 0.001,def: 0.03, fmt: v => v.toFixed(3)   },
-  { key: "b_couple", code: "C", label: "Flywheel coupling B_c",    min: 0,   max: 0.3,  step: 0.001,def: 0,    fmt: v => v.toFixed(3)   },
+  { key: "detent_a", code: "A", label: "Detent sharpness",         min: 0.1, max: 8,    step: 0.1,  def: 5,    fmt: v => v.toFixed(2)   },
+  { key: "detent_k", code: "K", label: "Click strength",           min: 0,   max: 5,    step: 0.01, def: 1.5,  fmt: v => v.toFixed(3)   },
+  { key: "b_damp",   code: "D", label: "Damping",                  min: 0,   max: 0.25, step: 0.001,def: 0.06, fmt: v => v.toFixed(4)   },
+  { key: "j_virt",   code: "J", label: "Flywheel inertia",         min: 0,   max: 0.3,  step: 0.001,def: 0.03, fmt: v => v.toFixed(3)   },
+  { key: "b_couple", code: "C", label: "Flywheel strength",        min: 0,   max: 0.3,  step: 0.001,def: 0,    fmt: v => v.toFixed(3)   },
   // Shaft-velocity LPF cutoff used ONLY in haptic mode (feeds the detent
   // viscous damping + virtual-flywheel admittance). Log-scaled like the
   // balance-pane LPF sliders — `code` maps to the firmware `CH<hz>`
   // command. The balance-mode shaft-vel LPF is a separate knob in the
   // balancer pane (`fc_shaft_vel`, CF).
-  { key: "fc_shaft_vel_hap", code: "H", label: "LPF: shaft vel (Hz)",
+  { key: "fc_shaft_vel_hap", code: "H", label: "Velocity smoothing (Hz)",
     scale: "log", lo: 1, hi: 300, min: 0, max: 100, step: 0.5,
     def: 39.6, fmt: v => `${v < 10 ? v.toFixed(1) : v.toFixed(0)}` },
 ];
@@ -586,10 +647,10 @@ const PARAMS = [
 // commands; setpoint uses `Cx<f>`.
 const LQR_PARAMS = [
   // All sliders give 25 detents from min→max (step = range/25).
-  { key: "k_x",     idx: 0, label: "K · shaft pos",   min: 0, max: 1.0,  step: 0.04,    def: 0, fmt: v => v.toFixed(3) },
-  { key: "k_xv",    idx: 1, label: "K · shaft vel",   min: 0, max: 0.1, step: 0.004,  def: 0, fmt: v => v.toFixed(4) },
-  { key: "k_th",    idx: 2, label: "K · tilt (rad)",  min: 0, max: 9.0,  step: 0.36,    def: 0, fmt: v => v.toFixed(3) },
-  { key: "k_thd",   idx: 3, label: "K · tilt rate",   min: 0, max: 0.30, step: 0.012,   def: 0, fmt: v => v.toFixed(4) },
+  { key: "k_x",     idx: 0, label: "Position gain",   min: 0, max: 1.0,  step: 0.04,    def: 0, fmt: v => v.toFixed(3) },
+  { key: "k_xv",    idx: 1, label: "Velocity gain",   min: 0, max: 0.1, step: 0.004,  def: 0, fmt: v => v.toFixed(4) },
+  { key: "k_th",    idx: 2, label: "Tilt gain",       min: 0, max: 9.0,  step: 0.36,    def: 0, fmt: v => v.toFixed(3) },
+  { key: "k_thd",   idx: 3, label: "Tilt-rate gain",  min: 0, max: 0.30, step: 0.012,   def: 0, fmt: v => v.toFixed(4) },
   // Setpoint shown as linear cart distance (mm). Firmware command Cx
   // takes shaft angle in rad, so we divide by WHEEL_RADIUS_MM on send
   // and multiply on readback. Sign-flipped so the slider direction
@@ -604,10 +665,10 @@ const LQR_PARAMS = [
   // firmware `CF<hz>` / `CT<hz>` commands. Tilt POSITION (K_θ) and shaft
   // POSITION are fed raw — no LPF. The tilt cutoff drives only the gyro
   // tilt-rate LPF (K_θ̇ path); shaft vel keeps its own LPF.
-  { key: "fc_shaft_vel", code: "F", label: "LPF: shaft vel (Hz)",
+  { key: "fc_shaft_vel", code: "F", label: "Velocity smoothing (Hz)",
     scale: "log", lo: 1, hi: 300, min: 0, max: 100, step: 0.5,
     def: 150, fmt: v => `${v < 10 ? v.toFixed(1) : v.toFixed(0)}` },
-  { key: "fc_tilt",      code: "T", label: "LPF: tilt rate (Hz)",
+  { key: "fc_tilt",      code: "T", label: "Tilt-rate smoothing (Hz)",
     scale: "log", lo: 1, hi: 300, min: 0, max: 100, step: 0.5,
     def: 20,  fmt: v => `${v < 10 ? v.toFixed(1) : v.toFixed(0)}` },
 ];
@@ -615,8 +676,8 @@ const LQR_PARAMS = [
 // Slider-space ↔ value-space transforms for log-scaled params. Linear
 // params pass through unchanged. The slider's own value attribute
 // always carries slider-space (0..100 for log); lqrState stores the
-// actual value (Hz, etc.) so pendingSends / pushAllParams / Q readback
-// all see the right number.
+// actual value (Hz, etc.) so pendingSends / Q readback all see the
+// right number.
 function lpfValueOf(p, sraw) {
   if (p.scale === "log") return p.lo * Math.pow(p.hi / p.lo, sraw / 100);
   return sraw;
@@ -635,7 +696,7 @@ const WHEEL_RADIUS_MM = 27.5;
 
 // Factory presets. User edits are layered on top and persisted to
 // localStorage (loadPresets/savePresets) so they survive reloads — the
-// web-app analog of "Save to flash" persisting params to device NVS.
+// web-app analog of "Save to knob" persisting params to device NVS.
 const BUILTIN_PRESETS = {
   Subtle:   { detent_n: 24, detent_a: 2,  detent_k: 0.2, b_damp: 0.03 },
   Default:  { detent_n: 12, detent_a: 5,  detent_k: 0.5, b_damp: 0.03 },
@@ -1047,6 +1108,7 @@ function onSerialLine(line) {
   if (qWaiter && line.startsWith("Q ")) {
     const w = qWaiter; qWaiter = null;
     w.resolve(line);
+    return;   // don't echo the (periodic) Q reply to the console
   }
   if (presetWaiter && line.startsWith("PRESETS ")) {
     const w = presetWaiter; presetWaiter = null;
@@ -1088,6 +1150,7 @@ const btnConnect   = document.getElementById("btnConnect");
 const transportSel = document.getElementById("transport");
 
 function setStatus(ok, name) {
+  document.body.classList.toggle("connected", !!ok);   // drives connect-hint + .needs-conn gating
   const flashBtn = document.getElementById("btnFlash");
   if (ok) {
     statusEl.textContent = "Connected"; statusEl.className = "pill ok";
@@ -1225,6 +1288,7 @@ document.getElementById("btnWinding").onclick = async () => {
 
 document.getElementById("btnRecal").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
+  if (!confirm("Recalibrate? This wipes the cached motor alignment and reboots the knob (it re-aligns on next boot).")) return;
   try {
     await transport.writeCmd("L\n");
     log("Recal sent — wiping cached alignment and rebooting.", "ok");
@@ -1568,6 +1632,74 @@ setInterval(async () => {
   } finally { sliderSending = false; }
 }, 80);
 
+// ─── Periodic gain reconciliation ────────────────────────────────────────────
+// Once connected, the UI is authoritative (connect did the one-time
+// knob→UI mirror). Every few seconds we READ the knob's actual values and,
+// for any that have drifted from the UI — e.g. a live write that got
+// dropped, or the knob having rebooted to its NVS/defaults — re-queue the
+// UI's value so the robot explicitly follows the UI's gains. The read is
+// compare-only: it never touches the sliders (UI stays unchanged), and
+// corrections go through the normal send pump above.
+const PARAM_TOKEN = {   // UI param key → token in the params/Q blob
+  detent_n: "dN", detent_a: "dA", detent_k: "dK", b_damp: "dD",
+  j_virt: "J", b_couple: "BC",
+  k_x: "k0", k_xv: "k1", k_th: "k2", k_thd: "k3", x_ref: "xref",
+  fc_shaft_vel: "fcV", fc_shaft_vel_hap: "fcVH", fc_tilt: "fcT",
+};
+function parseBlobValues(raw) {
+  const out = {};
+  for (const part of raw.trim().split(/\s+/)) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const v = parseFloat(part.slice(eq + 1));
+    if (!Number.isNaN(v)) out[part.slice(0, eq)] = v;
+  }
+  return out;
+}
+// Loose tolerance: absorbs the knob's limited report precision (fc is
+// only %.2f) while still catching a real drop, which leaves the value
+// grossly off (a stale/default number), not 0.01 away.
+function gainMatches(robot, ui) {
+  return Math.abs(robot - ui) <= 0.01 + 0.005 * Math.abs(ui);
+}
+let verifyBusy = false;
+async function verifyGains() {
+  if (!transport || typeof transport.readParams !== "function") return;
+  if (verifyBusy || sliderSending) return;
+  if (Object.keys(pendingSends).length) return;   // writes in flight — recheck next cycle
+  verifyBusy = true;
+  try {
+    const raw = await transport.readParams();
+    if (!raw) return;
+    const rv = parseBlobValues(raw);
+    let fixed = 0;
+    for (const p of PARAMS) {
+      const tok = PARAM_TOKEN[p.key];
+      if (!tok || !(tok in rv)) continue;
+      const uiVal = (p.key === "b_couple") ? effectiveBCouple() : paramState[p.key];
+      if (!gainMatches(rv[tok], uiVal)) { pendingSends[p.key] = uiVal; fixed++; }
+    }
+    for (const p of LQR_PARAMS) {
+      const tok = PARAM_TOKEN[p.key];
+      if (!tok || !(tok in rv)) continue;
+      if (p.key === "x_ref") {
+        const uiRad = -lqrState.x_ref / WHEEL_RADIUS_MM;   // UI mm → firmware rad
+        if (!gainMatches(rv[tok], uiRad)) { pendingSends["__lqr_x"] = { kind: "x", val: lqrState.x_ref }; fixed++; }
+      } else if (typeof p.idx === "number") {
+        if (!gainMatches(rv[tok], lqrState[p.key])) { pendingSends["__lqr_" + p.idx] = { kind: "g", idx: p.idx, val: lqrState[p.key] }; fixed++; }
+      } else if (p.code) {
+        if (!gainMatches(rv[tok], lqrState[p.key])) { pendingSends["__lqr_" + p.code] = { kind: "C", code: p.code, val: lqrState[p.key] }; fixed++; }
+      }
+    }
+    if (fixed) log(`Gain check: knob had drifted on ${fixed} value(s) — re-sent.`, "warn");
+  } catch (e) {
+    /* read failed (timeout / mid-reconnect) — try again next cycle */
+  } finally {
+    verifyBusy = false;
+  }
+}
+setInterval(() => { verifyGains().catch(() => {}); }, 5000);
+
 // ─── Balancer sliders + calibration ─────────────────────────────────────────
 const lqrSlidersEl   = document.getElementById("lqrSliders");
 const lqrSliderEls   = {};
@@ -1638,27 +1770,6 @@ document.getElementById("btnCalRot").onclick = async () => {
   catch (e) { log("Rotate failed: " + e.message, "bad"); }
 };
 
-async function pushAllParams() {
-  if (!transport) return;
-  for (const p of PARAMS) {
-    const val = (p.key === "b_couple") ? effectiveBCouple()
-                                       : paramState[p.key];
-    try { await transport.writeCmd(`C${p.code}${val}\n`); }
-    catch (e) { return log("pushAll failed: " + e.message, "bad"); }
-  }
-  for (const p of LQR_PARAMS) {
-    const v = lqrState[p.key];
-    let line;
-    if (typeof p.idx === "number") line = `Cg${p.idx}${v}\n`;
-    else if (p.code === "x")       line = `Cx${-v / WHEEL_RADIUS_MM}\n`;
-    else if (p.code)               line = `C${p.code}${v}\n`;
-    else continue;
-    try { await transport.writeCmd(line); }
-    catch (e) { return log("pushAll failed: " + e.message, "bad"); }
-  }
-  log("Pushed all params (haptic + LQR).", "ok");
-}
-document.getElementById("btnPushAll").onclick = pushAllParams;
 document.getElementById("btnSave").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   try { await transport.writeCmd("S\n"); log("Saved params to NVS.", "ok"); }
@@ -1666,8 +1777,9 @@ document.getElementById("btnSave").onclick = async () => {
 };
 document.getElementById("btnForget").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
-  try { await transport.writeCmd("F\n"); log("Cleared saved params.", "ok"); }
-  catch (e) { log("Forget failed: " + e.message, "bad"); }
+  if (!confirm("Reset tuning? The knob will discard its saved params and boot from firmware defaults next power-up.")) return;
+  try { await transport.writeCmd("F\n"); log("Tuning reset — knob will use defaults on next boot.", "ok"); }
+  catch (e) { log("Reset tuning failed: " + e.message, "bad"); }
 };
 
 // ─── Presets ─────────────────────────────────────────────────────────────────
@@ -1675,7 +1787,7 @@ document.getElementById("btnForget").onclick = async () => {
 // syncPresets); localStorage is just an offline render cache. "Save
 // preset" captures the current haptic sliders under a name (reusing a
 // name updates it) and "Reset presets" restores the factory set — both
-// persisted to the device, the same way "Save to flash" persists params.
+// persisted to the device, the same way "Save to knob" persists params.
 const presetsEl = document.getElementById("presets");
 let lastAppliedPreset = "";
 
@@ -2266,6 +2378,19 @@ function drawBias() {
 }
 new ResizeObserver(drawBias).observe(biasCanvas);
 drawBias();
+
+// Canvases inside a collapsed <details> have zero client size, so they
+// can't render until the section is first opened. Force a redraw on open
+// (the ResizeObservers above also fire on the 0→size change, but this is
+// belt-and-suspenders for browsers that don't).
+const secBalanceEl = document.getElementById("secBalance");
+if (secBalanceEl) secBalanceEl.addEventListener("toggle", () => {
+  if (secBalanceEl.open) { drawBalance(); drawBias(); }
+});
+const secDiagEl = document.getElementById("secDiag");
+if (secDiagEl) secDiagEl.addEventListener("toggle", () => {
+  if (secDiagEl.open) drawTorque();
+});
 
 // ─── Boot banner ────────────────────────────────────────────────────────────
 if (!("bluetooth" in navigator)) {
