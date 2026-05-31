@@ -560,6 +560,10 @@
         <button id="btnCalRot" class="needs-conn" title="Rotate the tilt-measurement axis 90° around up_b (cycles through 4 perpendicular axes)">Rotate axis 90°</button>
         <span class="stat" id="calStatus">cal: —</span>
       </div>
+      <div class="row" style="margin-top: 6px;">
+        <button id="btnFreeSpin" class="needs-conn" title="Drives a torque ramp to measure the wheel's free-spin load and arm the lift detector. Hold the bot in the air before running.">Free-spin cal</button>
+        <span class="stat">hold the bot in the air, then run</span>
+      </div>
       <div id="lqrSliders" style="margin-top: 8px;"></div>
       <canvas id="balanceCanvas" height="200" style="margin-top: 12px;"></canvas>
       <div class="stat" id="balanceInfo" style="margin-top: 6px;"></div>
@@ -1796,6 +1800,12 @@ document.getElementById("btnCalRot").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   try { await transport.writeCmd("GR\n"); log("Rotated tilt axis 90°.", "ok"); }
   catch (e) { log("Rotate failed: " + e.message, "bad"); }
+};
+document.getElementById("btnFreeSpin").onclick = async () => {
+  if (!transport) return log("Not connected.", "bad");
+  if (!confirm("Free-spin calibration: hold the bot OFF the ground first — it drives the wheel through a torque ramp. Ready?")) return;
+  try { await transport.writeCmd("J\n"); log("Free-spin cal queued — keep the bot in the air.", "ok"); }
+  catch (e) { log("Free-spin cal failed: " + e.message, "bad"); }
 };
 
 document.getElementById("btnSave").onclick = async () => {
