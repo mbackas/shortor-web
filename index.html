@@ -31,7 +31,11 @@
   html, body { height: 100%; }
   body {
     margin: 0;
-    background: var(--bg);
+    /* Base dark bg + a faint version-cycled tint (R→G→B per update). JS
+       sets --tint (space-separated rgb) from the stamped build number;
+       the wash is most visible in the side gutters on wide screens. */
+    background-color: var(--bg);
+    background-image: linear-gradient(rgb(var(--tint, 0 0 0) / 0.10), rgb(var(--tint, 0 0 0) / 0.10));
     color: var(--fg);
     font-family: var(--font-sans);
     font-size: 12px;
@@ -65,6 +69,7 @@
     font-weight: 600;
     letter-spacing: 0.01em;
   }
+  .ver { font-size: 10px; color: var(--muted); font-family: var(--font-mono); white-space: nowrap; }
   .hdr-grow { flex: 1; min-width: 0; }
   .hdr-telem {
     display: flex;
@@ -483,6 +488,7 @@
 <header>
   <div class="hdr-brand">
     <h1>Shortor Knob</h1>
+    <span id="appVer" class="ver" title="Web-app version — auto-incremented every commit"></span>
     <span id="status" class="pill bad">Disconnected</span>
     <span class="hdr-grow"></span>
     <select id="transport" aria-label="Transport">
@@ -635,6 +641,13 @@
 
 <script>
 "use strict";
+
+// Auto-stamped by the pre-commit hook (.git/hooks/pre-commit): ver is the
+// sequential commit ordinal, bumped on every commit; date is the commit
+// day. Drives the header version readout and the background tint, which
+// cycles red→green→blue by ver%3 so each update is visually distinct.
+const APP_BUILD = { ver: 23, date: "2026-05-31" };
+const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
 // Mouse service. Lets the slider tuning go directly over BLE without
@@ -1169,6 +1182,14 @@ const statusEl     = document.getElementById("status");
 const deviceInfoEl = document.getElementById("deviceInfo");
 const btnConnect   = document.getElementById("btnConnect");
 const transportSel = document.getElementById("transport");
+
+// Stamp the build version into the header and set the version-cycled
+// background tint (red→green→blue by ver%3).
+(() => {
+  const v = document.getElementById("appVer");
+  if (v) v.textContent = `v${APP_BUILD.ver} · ${APP_BUILD.date}`;
+  document.documentElement.style.setProperty("--tint", APP_TINTS[APP_BUILD.ver % APP_TINTS.length]);
+})();
 
 function setStatus(ok, name) {
   document.body.classList.toggle("connected", !!ok);   // drives connect-hint + .needs-conn gating
