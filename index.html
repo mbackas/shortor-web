@@ -521,13 +521,6 @@
         <button id="btnCalRot"  title="Rotate the tilt-measurement axis 90° around up_b (cycles through 4 perpendicular axes)">Rotate axis 90°</button>
         <span class="stat" id="calStatus">cal: —</span>
       </div>
-      <div class="row" style="margin-top: 8px;">
-        <label class="toggle"
-               title="Linear P-controller brakes the wheel past the knee speed. LPF'd input means brief recovery transients pass through untouched — only sustained over-speed (held bot) engages the brake.">
-          <input type="checkbox" id="slimOn" checked>
-          <span>Wheel-speed limit when held</span>
-        </label>
-      </div>
       <div id="lqrSliders" style="margin-top: 8px;"></div>
       <canvas id="balanceCanvas" height="200" style="margin-top: 12px;"></canvas>
       <div class="stat" id="balanceInfo" style="margin-top: 6px;"></div>
@@ -603,11 +596,6 @@ const LQR_PARAMS = [
   // matches physical robot motion (firmware shaft-angle convention is
   // opposite).
   { key: "x_ref",   code: "x", label: "Cart setpoint (mm)", min: -100, max: 100, step: 1, def: 0, fmt: v => v.toFixed(0) },
-  // Wheel-speed limiter (LPF'd proportional brake). Gates on the
-  // `Wheel-speed limit when held` checkbox; sliders set the knee
-  // (rad/s) and Kp (V per rad/s of overspeed).
-  { key: "slim_v_max", code: "V", label: "Speed limit arm threshold (rad/s)",     min: 0, max: 20,  step: 0.8,  def: 2 * Math.PI, fmt: v => v.toFixed(2) },
-  { key: "slim_kp",    code: "P", label: "Speed limit damping Kp (V/(rad/s))",    min: 0, max: 0.5, step: 0.02, def: 0.1,         fmt: v => v.toFixed(3) },
   // LPF cutoff sliders — log-scaled (scale: "log") so the bottom of
   // the range (1–30 Hz, where most tuning happens) gets most of the
   // slider travel. `lo`/`hi` are the actual cutoff Hz endpoints; the
@@ -991,7 +979,6 @@ function applyParamsString(raw) {
                 J:  "j_virt",   BC: "b_couple",
                 k0: "k_x", k1: "k_xv", k2: "k_th", k3: "k_thd",
                 xref: "x_ref",
-                sV: "slim_v_max", sP: "slim_kp",
                 fcV: "fc_shaft_vel", fcVH: "fc_shaft_vel_hap", fcT: "fc_tilt" };
   for (const part of raw.trim().split(/\s+/)) {
     const eq = part.indexOf("=");
@@ -1012,12 +999,6 @@ function applyParamsString(raw) {
     if (k === "tag") {
       const pill = document.getElementById("fwBuildPill");
       if (pill) pill.textContent = `fw ${valStr}`;
-      continue;
-    }
-    if (k === "sE") {
-      if (typeof slimChk !== "undefined" && slimChk) {
-        slimChk.checked = (valStr === "1");
-      }
       continue;
     }
     let v = parseFloat(valStr);
@@ -1050,11 +1031,6 @@ function applyParamsString(raw) {
   if (typeof momentumChk !== "undefined" && momentumChk) {
     momentumChk.checked = (paramState.b_couple || 0) > 1e-6;
     setMomentumSlidersDisabled(!momentumChk.checked);
-  }
-  // Sync the speed-limit slider gating to its enable bit (set above
-  // from sE=, before the lqrSliderEls map existed for setSlim... to use).
-  if (typeof slimChk !== "undefined" && slimChk && typeof setSlimSlidersDisabled === "function") {
-    setSlimSlidersDisabled(!slimChk.checked);
   }
   drawProfile();
   drawRing();
@@ -1549,20 +1525,6 @@ momentumChk.addEventListener("change", () => {
   log(`Momentum ${momentumChk.checked ? "enabled" : "disabled"}.`, "ok");
 });
 
-// Wheel-speed limiter master enable. When unchecked the firmware skips
-// the proportional brake entirely (LQR has full authority). Sliders
-// for V_MAX / Kp are still pushed, just gated dark.
-const slimChk = document.getElementById("slimOn");
-function setSlimSlidersDisabled(off) {
-  if (lqrSliderEls && lqrSliderEls.slim_v_max) lqrSliderEls.slim_v_max.disabled = off;
-  if (lqrSliderEls && lqrSliderEls.slim_kp)    lqrSliderEls.slim_kp.disabled    = off;
-}
-slimChk.addEventListener("change", () => {
-  pendingSends["__slim_e"] = { kind: "C", code: "E", val: slimChk.checked ? 1 : 0 };
-  setSlimSlidersDisabled(!slimChk.checked);
-  log(`Wheel-speed limit ${slimChk.checked ? "enabled" : "disabled"}.`, "ok");
-});
-
 function onParamChange(p, value) {
   paramState[p.key] = value;
   sliderValueEls[p.key].textContent = p.fmt(value);
@@ -1593,7 +1555,7 @@ setInterval(async () => {
         // physical-forward convention (firmware shaft sign is opposite).
         line = `Cx${-val.val / WHEEL_RADIUS_MM}\n`;
       } else if (val && typeof val === "object" && val.kind === "C") {
-        // Plain-coded LQR-card param (speed-limit knee + Kp).
+        // Plain-coded LQR-card param (LPF cutoffs).
         line = `C${val.code}${val.val}\n`;
       } else {
         const p = PARAMS.find(x => x.key === key);
@@ -1631,8 +1593,7 @@ for (const p of LQR_PARAMS) {
     lqrState[p.key] = v;
     val.textContent = p.fmt(v);
     // Cg<i><f> for indexed LQR gains, Cx<f> for the position setpoint
-    // (mm→rad + sign flip), C<code><f> for plain-coded params (slim,
-    // LPF cutoffs).
+    // (mm→rad + sign flip), C<code><f> for plain-coded params (LPF cutoffs).
     if (typeof p.idx === "number") pendingSends["__lqr_" + p.idx]   = { kind: "g", idx: p.idx, val: v };
     else if (p.code === "x")       pendingSends["__lqr_x"]          = { kind: "x", val: v };
     else if (p.code)               pendingSends["__lqr_" + p.code]  = { kind: "C", code: p.code, val: v };
@@ -1695,9 +1656,6 @@ async function pushAllParams() {
     try { await transport.writeCmd(line); }
     catch (e) { return log("pushAll failed: " + e.message, "bad"); }
   }
-  // Master speed-limit enable bit isn't a slider — push it separately.
-  try { await transport.writeCmd(`CE${slimChk.checked ? 1 : 0}\n`); }
-  catch (e) { return log("pushAll failed: " + e.message, "bad"); }
   log("Pushed all params (haptic + LQR).", "ok");
 }
 document.getElementById("btnPushAll").onclick = pushAllParams;
