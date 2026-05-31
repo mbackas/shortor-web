@@ -495,12 +495,16 @@
       </label>
       <div id="sliders"></div>
       <div class="preset-row" id="presets"></div>
+      <div class="preset-row" style="margin-top: 4px;">
+        <button id="btnSavePreset">Save preset…</button>
+        <button id="btnResetPresets">Reset presets</button>
+      </div>
       <div class="row" style="margin-top: 12px;">
         <button id="btnPushAll">Push all to firmware</button>
         <button id="btnSave" class="primary">Save to flash</button>
         <button id="btnForget">Forget saved</button>
       </div>
-      <p class="help" style="margin: 8px 0 0;">Sliders push live; Save persists to NVS.</p>
+      <p class="help" style="margin: 8px 0 0;">Sliders push live; Save persists params to NVS. Presets are stored on the knob too.</p>
     </section>
 
     <section class="card">
@@ -565,6 +569,7 @@ const PARAMS_UUID   = "e69a0002-1234-5678-9abc-def012345678";
 const CMD_UUID      = "e69a0003-1234-5678-9abc-def012345678";
 const ANGLE_UUID    = "e69a0004-1234-5678-9abc-def012345678";
 const EVENT_UUID    = "e69a0005-1234-5678-9abc-def012345678";
+const PRESETS_UUID  = "e69a0006-1234-5678-9abc-def012345678";
 
 // ─── Parameter metadata ─────────────────────────────────────────────────────
 const PARAMS = [
@@ -640,7 +645,10 @@ function lpfSliderOf(p, val) {
 // to cart distance in mm: distance_mm = shaft_rad × WHEEL_RADIUS_MM.
 const WHEEL_RADIUS_MM = 27.5;
 
-const PRESETS = {
+// Factory presets. User edits are layered on top and persisted to
+// localStorage (loadPresets/savePresets) so they survive reloads — the
+// web-app analog of "Save to flash" persisting params to device NVS.
+const BUILTIN_PRESETS = {
   Subtle:   { detent_n: 24, detent_a: 2,  detent_k: 0.2, b_damp: 0.03 },
   Default:  { detent_n: 12, detent_a: 5,  detent_k: 0.5, b_damp: 0.03 },
   Snappy:   { detent_n: 12, detent_a: 5,  detent_k: 1.0, b_damp: 0.05 },
@@ -648,6 +656,20 @@ const PRESETS = {
   Free:     { detent_n: 12, detent_a: 1,  detent_k: 0,   b_damp: 0.01 },
   Heavy:    { detent_n: 12, detent_a: 1,  detent_k: 0,   b_damp: 0.005, j_virt: 0.15, b_couple: 0.05 },
 };
+const PRESETS_LS_KEY = "shortor_presets_v1";
+function loadPresets() {
+  try {
+    const raw = localStorage.getItem(PRESETS_LS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) { /* corrupt or unavailable — fall back to factory */ }
+  // Deep clone so the factory table can't be mutated in place.
+  return JSON.parse(JSON.stringify(BUILTIN_PRESETS));
+}
+function savePresets() {
+  try { localStorage.setItem(PRESETS_LS_KEY, JSON.stringify(PRESETS)); }
+  catch (e) { log("Could not persist presets: " + e.message, "bad"); }
+}
+let PRESETS = loadPresets();
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const consoleEl = document.getElementById("console");
@@ -721,6 +743,8 @@ class BleTransport {
     this.cmd     = await svc.getCharacteristic(CMD_UUID);
     try { this.params = await svc.getCharacteristic(PARAMS_UUID); }
     catch (e) { this.params = null; }   // older firmware — no read char
+    try { this.presets = await svc.getCharacteristic(PRESETS_UUID); }
+    catch (e) { this.presets = null; }  // older firmware — no presets char
     try {
       this.angle = await svc.getCharacteristic(ANGLE_UUID);
       await this.angle.startNotifications();
@@ -848,9 +872,23 @@ class BleTransport {
     if (!this.cmd) throw new Error("not connected");
     await this.cmd.writeValueWithoutResponse(enc.encode(line));
   }
+  async writeCmdLong(line) {
+    // Reliable write: performs a GATT long write (prepared writes) when
+    // the value exceeds one ATT packet, so multi-hundred-byte payloads
+    // (the preset blob) arrive whole. Write-without-response can't chunk.
+    if (!this.cmd) throw new Error("not connected");
+    await this.cmd.writeValueWithResponse(enc.encode(line));
+  }
   async readParams() {
     if (!this.params) return null;
     const dv = await this.params.readValue();
+    return new TextDecoder().decode(dv);
+  }
+  async readPresets() {
+    // GATT read auto-handles long values (>MTU) so the whole preset
+    // blob arrives in one shot, unlike the MTU-bounded event notify.
+    if (!this.presets) return null;
+    const dv = await this.presets.readValue();
     return new TextDecoder().decode(dv);
   }
   async disconnect() {
@@ -916,7 +954,22 @@ class SerialTransport {
       catch (e) { clearTimeout(timer); qWaiter = null; resolve(null); }
     });
   }
+  async readPresets() {
+    // Send p\n, wait for the "PRESETS <json>" reply line (serial lines
+    // are unbounded, so the whole blob arrives intact). Returns the JSON
+    // string, or null on timeout / write error.
+    return new Promise(async (resolve) => {
+      const timer = setTimeout(() => { presetWaiter = null; resolve(null); }, 2000);
+      presetWaiter = { resolve: (s) => { clearTimeout(timer); resolve(s); } };
+      try { await this.writer.write(enc.encode("p\n")); }
+      catch (e) { clearTimeout(timer); presetWaiter = null; resolve(null); }
+    });
+  }
   async writeCmd(line) {
+    await this.writer.write(enc.encode(line));
+  }
+  async writeCmdLong(line) {
+    // Serial is a byte stream — no packet cap to work around.
     await this.writer.write(enc.encode(line));
   }
   async disconnect() {
@@ -1008,7 +1061,8 @@ function applyParamsString(raw) {
 }
 
 // ─── Top-level event handlers ───────────────────────────────────────────────
-let qWaiter = null;  // {resolve} for the next "Q ..." line over serial.
+let qWaiter = null;       // {resolve} for the next "Q ..." line over serial.
+let presetWaiter = null;  // {resolve} for the next "PRESETS ..." line.
 function onSerialLine(line) {
   if (line.startsWith("torque:")) {
     const v = parseFloat(line.slice(7));
@@ -1017,6 +1071,11 @@ function onSerialLine(line) {
   if (qWaiter && line.startsWith("Q ")) {
     const w = qWaiter; qWaiter = null;
     w.resolve(line);
+  }
+  if (presetWaiter && line.startsWith("PRESETS ")) {
+    const w = presetWaiter; presetWaiter = null;
+    w.resolve(line.slice(8));   // strip the "PRESETS " prefix
+    return;
   }
   if (line.length) log("← " + line);
 }
@@ -1107,6 +1166,9 @@ btnConnect.onclick = async () => {
         log("Param read failed: " + e.message, "bad");
       }
     }
+    // Presets live in the knob's NVS — pull them so the buttons match
+    // what's stored (seeding the device from the local set if it's bare).
+    await syncPresets();
   } catch (e) {
     log("Connect failed: " + e.message, "bad");
     transport = null;
@@ -1161,6 +1223,7 @@ async function tryAutoReconnect() {
             if (raw) { applyParamsString(raw); log("Loaded params from knob.", "ok"); }
           } catch (e) { /* non-fatal */ }
         }
+        await syncPresets();
         return true;
       } catch (e) {
         if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
@@ -1649,32 +1712,113 @@ document.getElementById("btnForget").onclick = async () => {
   catch (e) { log("Forget failed: " + e.message, "bad"); }
 };
 
-// Presets
+// ─── Presets ─────────────────────────────────────────────────────────────────
+// The knob's NVS is the source of truth (synced on connect via
+// syncPresets); localStorage is just an offline render cache. "Save
+// preset" captures the current haptic sliders under a name (reusing a
+// name updates it) and "Reset presets" restores the factory set — both
+// persisted to the device, the same way "Save to flash" persists params.
 const presetsEl = document.getElementById("presets");
-for (const [name, vals] of Object.entries(PRESETS)) {
-  const btn = document.createElement("button"); btn.textContent = name;
-  btn.onclick = () => {
-    // If the preset wants momentum on (b_couple > 0), auto-tick the
-    // checkbox first so b_couple writes don't get gated to zero by
-    // effectiveBCouple(). Conversely a b_couple==0 preset un-ticks.
-    if ("b_couple" in vals) {
-      const wantOn = vals.b_couple > 1e-6;
-      if (momentumChk.checked !== wantOn) {
-        momentumChk.checked = wantOn;
-        setMomentumSlidersDisabled(!wantOn);
-      }
+let lastAppliedPreset = "";
+
+function applyPreset(name) {
+  const vals = PRESETS[name];
+  if (!vals) return;
+  // If the preset wants momentum on (b_couple > 0), auto-tick the
+  // checkbox first so b_couple writes don't get gated to zero by
+  // effectiveBCouple(). Conversely a b_couple==0 preset un-ticks.
+  if ("b_couple" in vals) {
+    const wantOn = vals.b_couple > 1e-6;
+    if (momentumChk.checked !== wantOn) {
+      momentumChk.checked = wantOn;
+      setMomentumSlidersDisabled(!wantOn);
     }
-    for (const [k, v] of Object.entries(vals)) {
-      if (sliderEls[k]) {
-        const p = PARAMS.find(x => x.key === k);
-        sliderEls[k].value = lpfSliderOf(p, v);
-        onParamChange(p, v);
-      }
+  }
+  for (const [k, v] of Object.entries(vals)) {
+    if (sliderEls[k]) {
+      const p = PARAMS.find(x => x.key === k);
+      sliderEls[k].value = lpfSliderOf(p, v);
+      onParamChange(p, v);
     }
-    log(`Applied preset: ${name}`, "ok");
-  };
-  presetsEl.appendChild(btn);
+  }
+  lastAppliedPreset = name;
+  log(`Applied preset: ${name}`, "ok");
 }
+
+function renderPresets() {
+  presetsEl.innerHTML = "";
+  for (const name of Object.keys(PRESETS)) {
+    const btn = document.createElement("button");
+    btn.textContent = name;
+    btn.onclick = () => applyPreset(name);
+    presetsEl.appendChild(btn);
+  }
+}
+renderPresets();
+
+// Full snapshot of the current haptic slider values (every PARAMS key,
+// incl. the momentum coupling) so applying the preset later restores the
+// complete feel — not just the few fields the factory presets carried.
+function currentHapticSnapshot() {
+  const snap = {};
+  for (const p of PARAMS) snap[p.key] = paramState[p.key];
+  return snap;
+}
+async function pushPresetsToDevice() {
+  if (!transport) return;
+  // Compact JSON (no spaces/newlines) so it survives the line-framed
+  // 'P' command and fits the NVS string. A characteristic value is
+  // capped at 512 B over BLE, so guard the blob and bail loudly rather
+  // than silently truncating someone's presets.
+  const line = "P" + JSON.stringify(PRESETS) + "\n";
+  if (line.length > 512) {
+    throw new Error(`preset blob too large (${line.length} B > 512) — delete a preset`);
+  }
+  // Reliable long write so the whole blob lands in one onWrite.
+  await transport.writeCmdLong(line);
+}
+// Pull presets from the knob on connect; seed the knob from the local
+// set if its NVS is empty/invalid so "all presets live in NVS" holds.
+async function syncPresets() {
+  if (!transport || typeof transport.readPresets !== "function") return;
+  let raw = null;
+  try { raw = await transport.readPresets(); }
+  catch (e) { return; }
+  if (raw && raw.trim()) {
+    try {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object" && Object.keys(obj).length) {
+        PRESETS = obj;
+        savePresets();
+        renderPresets();
+        log("Loaded presets from knob.", "ok");
+        return;
+      }
+    } catch (e) { log("Knob returned an unparseable preset blob — keeping local.", "bad"); }
+  }
+  try { await pushPresetsToDevice(); log("Seeded knob presets from local set.", "ok"); }
+  catch (e) { /* non-fatal */ }
+}
+
+document.getElementById("btnSavePreset").onclick = async () => {
+  const name = (prompt("Save current haptic settings as preset:", lastAppliedPreset || "") || "").trim();
+  if (!name) return;
+  const existed = name in PRESETS;
+  PRESETS[name] = currentHapticSnapshot();
+  savePresets();
+  renderPresets();
+  lastAppliedPreset = name;
+  try { await pushPresetsToDevice(); } catch (e) { log("Preset save to knob failed: " + e.message, "bad"); }
+  log(`${existed ? "Updated" : "Created"} preset "${name}"${transport ? " (saved to knob)" : " (local only — not connected)"}.`, "ok");
+};
+document.getElementById("btnResetPresets").onclick = async () => {
+  if (!confirm("Reset all presets to factory defaults? This discards your custom presets on this browser and the knob.")) return;
+  PRESETS = JSON.parse(JSON.stringify(BUILTIN_PRESETS));
+  savePresets();
+  renderPresets();
+  try { await pushPresetsToDevice(); } catch (e) { /* non-fatal */ }
+  log(`Presets reset to factory defaults${transport ? " (saved to knob)" : ""}.`, "ok");
+};
 
 // ─── Haptic profile preview ─────────────────────────────────────────────────
 const profileCanvas = document.getElementById("profileCanvas");
