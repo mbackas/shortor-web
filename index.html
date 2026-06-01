@@ -678,6 +678,36 @@
     border-color: var(--amber);
     font-weight: 600;
   }
+  /* ── Probe-sweep slot picker (A/B/C/D condition×grip) ─── */
+  .sweep-slots {
+    display: flex; flex-wrap: wrap; align-items: stretch;
+    gap: 5px; margin-top: 8px;
+  }
+  .sweep-slots-lbl { align-self: center; margin-right: 2px; }
+  .sweep-slots button {
+    display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px; padding: 3px 9px; min-height: 32px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    background: var(--inset);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: color .12s, border-color .12s, background .12s;
+  }
+  .sweep-slots button b     { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; line-height: 1; }
+  .sweep-slots button small { font-size: 9px; letter-spacing: 0.02em; opacity: 0.85; line-height: 1; }
+  .sweep-slots button:hover { color: var(--fg); border-color: var(--amber-dim); }
+  .sweep-slots button.armed {
+    color: var(--amber-hi); border-color: var(--amber);
+    background: rgba(255,180,84,0.08);
+    box-shadow: 0 0 0 1px var(--amber) inset;
+  }
+  .sweep-slots button.filled b::after {
+    content: "\25CF"; font-size: 7px; vertical-align: super;
+    margin-left: 4px; color: var(--slot-color, var(--ok));
+  }
+  .sweep-clear { margin-left: auto; font-size: 10px; }
   .sweep-chart-cap {
     font-family: var(--font-mono);
     font-size: 10px;
@@ -1163,8 +1193,16 @@
       </div>
       <div class="row" style="margin-top: 6px;">
         <button id="btnFreeSpin" class="needs-conn" title="Drives a torque ramp to measure the wheel's free-spin load and arm the lift detector. Hold the bot in the air before running.">Free-spin cal</button>
-        <button id="btnProbeSweep" class="needs-conn" title="Two-pass probe auto-cal: run once on the ground, once held in the air. It picks the probe frequency + threshold from the air/ground gap and saves them. Hold steady (~8 s each).">Probe sweep</button>
-        <span class="stat">hold the bot in the air, then run</span>
+        <button id="btnProbeSweep" class="needs-conn" title="Probe sweep: each run fills the armed slot below. For the auto-cal, run ground·firm then air·firm; add ground·loose / air·loose to characterize how grip firmness shifts the phase response. Hold steady (~8 s each).">Probe sweep</button>
+        <span class="stat">arm a slot, hold steady, then run</span>
+      </div>
+      <div class="sweep-slots" id="sweepSlots">
+        <span class="stat sweep-slots-lbl">next run →</span>
+        <button type="button" data-slot="0" class="armed"><b>A</b><small>ground·firm</small></button>
+        <button type="button" data-slot="1"><b>B</b><small>air·firm</small></button>
+        <button type="button" data-slot="2"><b>C</b><small>ground·loose</small></button>
+        <button type="button" data-slot="3"><b>D</b><small>air·loose</small></button>
+        <button type="button" id="sweepClear" class="sweep-clear" title="Clear all captured passes">clear</button>
       </div>
       <div class="sweep-wrap"><table id="sweepTable" class="sweep-table" hidden></table></div>
       <div id="sweepCharts" class="sweep-charts">
@@ -1174,15 +1212,10 @@
           <button type="button" data-m="Wg">Wg</button>
           <button type="button" data-m="Vf">Vf</button>
         </div>
-        <div class="sweep-chart-cap" id="sweepOverlayCap">phase dφ — ground vs air</div>
+        <div class="sweep-chart-cap" id="sweepOverlayCap">phase dφ — all conditions</div>
         <canvas id="sweepOverlayCanvas" height="210"></canvas>
-        <div class="sweep-legend">
-          <span><i class="sw-a"></i><span id="swLegA">pass A</span></span>
-          <span><i class="sw-b"></i><span id="swLegB">pass B</span></span>
-          <span><i class="sw-peak"></i>peak separation</span>
-          <span id="swLegProbe" hidden><i class="sw-probe"></i>chosen probe f</span>
-        </div>
-        <div class="sweep-chart-cap" id="sweepDeltaCap">normalized air↔ground separation — all metrics</div>
+        <div class="sweep-legend" id="sweepOverlayLegend"></div>
+        <div class="sweep-chart-cap" id="sweepDeltaCap">air − ground separation by grip</div>
         <canvas id="sweepDeltaCanvas" height="180"></canvas>
         <div class="sweep-legend" id="sweepDeltaLegend"></div>
       </div>
@@ -1263,7 +1296,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 25, date: "2026-06-01" };
+const APP_BUILD = { ver: 26, date: "2026-06-01" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1410,84 +1443,86 @@ function setCoh(v) {
   el.className = "pill " + (v >= 0.6 ? "ok" : v >= 0.3 ? "warn" : "bad");
 }
 
-// ─── Probe-sweep capture ─────────────────────────────────────────────────────
+// ─── Probe-sweep capture (A/B/C/D condition×grip slots) ──────────────────────
 // FW emits bracket-tagged "[SWP]" events (see shortor/Firmware/forUIfromFW.md):
-//   [SWP] pass=N begin …                         ← starts a pass
-//   [SWP] f=10.0 dphi=44 r=2.30 Vf=14.12 Wg=0.72 ← one row per probe frequency
-//   [SWP] pass=N captured …                      ← closes a pass
-//   [SWP] paired f=… dphi_thr=… r_thr=… sep=… ground=<1|2> — applied
-//   [SWP] paired f=… sep=… (<45) … unchanged     ← reject (same condition twice)
-//   [SWP] saved f=… dphi_thr=… r_thr=… sep=…      ← NVS write confirmation
-// Detection now gates on PHASE (dphi): |dphi| small = on the ground (engage),
-// near 180° = airborne (stay out). `ground=<1|2>` says which pass was ground,
-// so we label the passes by truth regardless of run order. Lines still echo to
-// the console verbatim.
-const sweepRuns = [];   // [{ rows:[{f,dphi,r,Vf,Wg}], done, pass }]
-const SWEEP_PRIMARY = "dphi";   // the metric detection now keys on
+//   [SWP] pass=N begin … / f=… dphi=… r=… Vf=… Wg=… / pass=N captured …
+//   [SWP] paired … ground=<1|2> — applied / [SWP] saved …   (NVS write)
+// Detection gates on PHASE (dphi): |dphi| small = on the ground (engage), near
+// 180° = airborne (stay out). For bench work we capture up to four conditions —
+// ground/air × firm/loose grip — into the *armed* slot (each W run fills it),
+// then overlay them so grip-induced phase shifts are visible at a glance.
+// Capture is decoupled from the FW's pass number: the armed slot decides where
+// a run lands, so the operator can run the conditions in any order. Lines still
+// echo to the console verbatim.
+const SWEEP_SLOTS = [
+  { key: "A", cond: "ground", grip: "firm",  label: "ground·firm",  color: "#ffb454" }, // amber
+  { key: "B", cond: "air",    grip: "firm",  label: "air·firm",     color: "#46d6c4" }, // cyan
+  { key: "C", cond: "ground", grip: "loose", label: "ground·loose", color: "#54d07f" }, // green
+  { key: "D", cond: "air",    grip: "loose", label: "air·loose",    color: "#ff625a" }, // red
+];
+const sweepRuns = [null, null, null, null];   // per-slot { rows:[{f,dphi,r,Vf,Wg}], done }
+let sweepArmed  = 0;               // slot index the next W run fills
+const SWEEP_PRIMARY = "dphi";      // the metric detection keys on
 // dphi = body-vs-wheel phase (deg, primary); r = inertia ratio (fallback);
 // Wg = gyro amplitude; Vf = wheel-velocity amplitude. Each gets a plot colour.
 const SWEEP_METRICS = [
-  { k: "dphi", lbl: "dφ", dp: 0, color: "#ffb454" },  // amber  — primary
-  { k: "r",    lbl: "r",  dp: 2, color: "#46d6c4" },  // cyan
-  { k: "Wg",   lbl: "Wg", dp: 3, color: "#54d07f" },  // green
-  { k: "Vf",   lbl: "Vf", dp: 2, color: "#ff625a" },  // red
+  { k: "dphi", lbl: "dφ", dp: 0, color: "#ffb454" },
+  { k: "r",    lbl: "r",  dp: 2, color: "#46d6c4" },
+  { k: "Wg",   lbl: "Wg", dp: 3, color: "#54d07f" },
+  { k: "Vf",   lbl: "Vf", dp: 2, color: "#ff625a" },
 ];
-let sweepMetric = SWEEP_PRIMARY;   // which metric the overlay graph shows
-let sweepGround = null;            // 0-based index of the run that was the ground pass
-let sweepResult = null;            // { f, dphi_thr, r_thr, sep, ground, rejected, saved }
-// Condition of run index i once the FW has paired the passes ("gnd"/"air"), else "".
-function sweepCond(i) {
-  if (sweepGround === null) return "";
-  return i === sweepGround ? "gnd" : "air";
-}
-function sweepCurrentRun() {
-  let run = sweepRuns[sweepRuns.length - 1];
-  if (!run || run.done) {
-    run = { rows: [], done: false };
-    sweepRuns.push(run);
-    while (sweepRuns.length > 2) sweepRuns.shift();
+let sweepMetric = SWEEP_PRIMARY;   // which metric the table + charts show
+let sweepResult = null;            // { f, dphi_thr, r_thr, sep, rejected, saved } — FW pairing
+
+const sweepCaptured = () => SWEEP_SLOTS
+  .map((s, i) => ({ slot: s, i, run: sweepRuns[i] }))
+  .filter(x => x.run && x.run.rows.length);
+const sweepRunByCG = (cond, grip) => {
+  const i = SWEEP_SLOTS.findIndex(s => s.cond === cond && s.grip === grip);
+  return i >= 0 ? sweepRuns[i] : null;
+};
+
+function updateSweepPicker() {
+  const wrap = document.getElementById("sweepSlots");
+  if (!wrap) return;
+  for (const btn of wrap.querySelectorAll("button[data-slot]")) {
+    const i = +btn.dataset.slot;
+    btn.classList.toggle("armed", i === sweepArmed);
+    btn.classList.toggle("filled", !!(sweepRuns[i] && sweepRuns[i].rows.length));
+    btn.style.setProperty("--slot-color", SWEEP_SLOTS[i].color);
   }
-  return run;
 }
+
 function captureSweepLine(text) {
   const body = text.replace(/^\[SWP\]\s*/i, "");
   const num = (re) => { const m = body.match(re); return m ? parseFloat(m[1]) : null; };
 
-  // "pass=N begin" — start a fresh pass (N=1 resets the whole sweep).
-  let m;
-  if ((m = body.match(/^pass=(\d+)\s+begin/i))) {
-    if (parseInt(m[1], 10) === 1) { sweepRuns.length = 0; sweepGround = null; sweepResult = null; }
-    sweepRuns.push({ rows: [], done: false, pass: parseInt(m[1], 10) });
-    while (sweepRuns.length > 2) sweepRuns.shift();
-    renderSweepTable();
+  // "pass=N begin" — (re)start capturing into the armed slot.
+  if (/^pass=\d+\s+begin/i.test(body)) {
+    sweepRuns[sweepArmed] = { rows: [], done: false };
+    updateSweepPicker(); refreshSweep();
     return;
   }
-  // "pass=N captured" — close the active pass.
+  // "pass=N captured" — close the armed slot, advance to the next slot.
   if (/^pass=\d+\s+captured/i.test(body)) {
-    const run = sweepRuns[sweepRuns.length - 1];
-    if (run) run.done = true;
-    renderSweepTable();
+    if (sweepRuns[sweepArmed]) sweepRuns[sweepArmed].done = true;
+    sweepArmed = (sweepArmed + 1) % SWEEP_SLOTS.length;
+    updateSweepPicker(); refreshSweep();
     return;
   }
-  // "paired …" — the result line. Carries ground=<1|2> (applied) or sep<45 (reject).
+  // "paired …" / "saved …" — the FW auto-cal's pairing result (saved threshold).
   if (/^paired\b/i.test(body)) {
-    const ground = num(/\bground=(\d+)/);
     sweepResult = {
       f:        num(/\bf=([-\d.]+)/),
       dphi_thr: num(/\bdphi_thr=([-\d.]+)/),
       r_thr:    num(/\br_thr=([-\d.]+)/),
       sep:      num(/\bsep=([-\d.]+)/),
-      ground,
-      rejected: /unchanged/i.test(body) || ground === null,
+      rejected: /unchanged/i.test(body) || num(/\bground=(\d+)/) === null,
       saved:    false,
     };
-    if (ground !== null) sweepGround = ground - 1;   // FW is 1-based; we store 0-based
-    const run = sweepRuns[sweepRuns.length - 1];
-    if (run) run.done = true;
-    renderSweepTable();
+    refreshSweep();
     return;
   }
-  // "saved …" — NVS write confirmation; fill in / confirm the result.
   if (/^saved\b/i.test(body)) {
     sweepResult = sweepResult || {};
     const keep = (v, prev) => (v === null ? prev : v);
@@ -1496,81 +1531,75 @@ function captureSweepLine(text) {
     sweepResult.r_thr    = keep(num(/\br_thr=([-\d.]+)/),    sweepResult.r_thr);
     sweepResult.sep      = keep(num(/\bsep=([-\d.]+)/),      sweepResult.sep);
     sweepResult.saved    = true;
-    renderSweepTable();
+    refreshSweep();
     return;
   }
-  // Warnings (e.g. "no g_jwheel (run J) …") carry no plottable data — just logged.
+  // Warnings (no f=) carry no plottable data — just logged.
   if (!/\bf=/.test(body)) return;
 
-  // Per-frequency data row: "f=… dphi=… r=… Vf=… Wg=…"
+  // Per-frequency data row → the armed slot.
   const f = num(/\bf=([-\d.]+)/);
   const dphi = num(/\bdphi=([-\d.]+)/), r = num(/\br=([-\d.]+)/);
   if (f === null || (dphi === null && r === null)) return;
-  sweepCurrentRun().rows.push({
-    f, dphi, r,
-    Vf: num(/\bVf=([-\d.]+)/),
-    Wg: num(/\bWg=([-\d.]+)/),
-  });
-  renderSweepTable();
+  if (!sweepRuns[sweepArmed]) sweepRuns[sweepArmed] = { rows: [], done: false };
+  sweepRuns[sweepArmed].rows.push({ f, dphi, r, Vf: num(/\bVf=([-\d.]+)/), Wg: num(/\bWg=([-\d.]+)/) });
+  updateSweepPicker(); refreshSweep();
 }
+
+function clearSweep() {
+  for (let i = 0; i < sweepRuns.length; i++) sweepRuns[i] = null;
+  sweepResult = null; sweepArmed = 0;
+  updateSweepPicker(); refreshSweep();
+}
+
+function refreshSweep() { renderSweepTable(); drawSweepCharts(); }
+
 function renderSweepTable() {
   const tbl = document.getElementById("sweepTable");
   if (!tbl) return;
-  const runs = sweepRuns.filter(rn => rn.rows.length);
-  if (!runs.length) { tbl.hidden = true; tbl.innerHTML = ""; return; }
-  const two   = runs.length === 2;
-  const freqs = [...new Set(runs.flatMap(rn => rn.rows.map(x => x.f)).filter(v => v !== null))]
-                  .sort((a, b) => a - b);
-  const pass  = (i) => (two ? (i === 0 ? "A" : "B") : "A") + (sweepCond(i) ? "·" + sweepCond(i) : "");
-  const rowOf = (rn, f) => rn.rows.find(x => x.f === f);
-  const fmt   = (v, dp) => (v === null || v === undefined) ? "·" : v.toFixed(dp);
-  const metrics = SWEEP_METRICS;
-  const PM = SWEEP_METRICS.find(m => m.k === SWEEP_PRIMARY);
-  let head = "<tr><th>f (Hz)</th>";
-  for (const m of metrics) {
-    for (let i = 0; i < runs.length; i++) head += `<th>${m.lbl} ${pass(i)}</th>`;
-    if (m.k === SWEEP_PRIMARY && two) head += `<th>Δ${m.lbl}</th>`;
-  }
+  const caps = sweepCaptured();
+  if (!caps.length) { tbl.hidden = true; tbl.innerHTML = ""; return; }
+  const M = SWEEP_METRICS.find(m => m.k === sweepMetric) || SWEEP_METRICS[0];
+  const fmt = (v, dp) => (v === null || v === undefined || Number.isNaN(v)) ? "·" : v.toFixed(dp);
+  const freqs = [...new Set(caps.flatMap(c => c.run.rows.map(x => x.f)).filter(v => v !== null))].sort((a, b) => a - b);
+  const valAt = (run, f) => { const row = run && run.rows.find(x => x.f === f); return row ? row[M.k] : null; };
+  const sepOf = (grip, f) => {
+    const gv = valAt(sweepRunByCG("ground", grip), f), av = valAt(sweepRunByCG("air", grip), f);
+    return (gv == null || av == null) ? null : av - gv;
+  };
+  const haveFirm  = sweepRunByCG("ground", "firm")  && sweepRunByCG("air", "firm");
+  const haveLoose = sweepRunByCG("ground", "loose") && sweepRunByCG("air", "loose");
+
+  let head = "<tr><th>f (Hz)</th>" + caps.map(c => `<th>${M.lbl} ${c.slot.key}</th>`).join("");
+  if (haveFirm)  head += "<th>Δfirm</th>";
+  if (haveLoose) head += "<th>Δloose</th>";
   head += "</tr>";
-  let body = "";
+  let rows = "";
   for (const f of freqs) {
-    body += `<tr><td>${f}</td>`;
-    for (const m of metrics) {
-      for (let i = 0; i < runs.length; i++) {
-        const row = rowOf(runs[i], f);
-        body += `<td>${row ? fmt(row[m.k], m.dp) : "·"}</td>`;
-      }
-      if (m.k === SWEEP_PRIMARY && two) {
-        const a = rowOf(runs[0], f), b = rowOf(runs[1], f);
-        const d = (a && b && a[m.k] !== null && b[m.k] !== null) ? b[m.k] - a[m.k] : null;
-        body += `<td class="sweep-delta">${d === null ? "·" : (d >= 0 ? "+" : "") + d.toFixed(m.dp)}</td>`;
-      }
+    rows += `<tr><td>${f}</td>` + caps.map(c => `<td>${fmt(valAt(c.run, f), M.dp)}</td>`).join("");
+    for (const [have, grip] of [[haveFirm, "firm"], [haveLoose, "loose"]]) {
+      if (!have) continue;
+      const d = sepOf(grip, f);
+      rows += `<td class="sweep-delta">${d == null ? "·" : (d >= 0 ? "+" : "") + d.toFixed(M.dp)}</td>`;
     }
-    body += "</tr>";
+    rows += "</tr>";
   }
-  let cap = two
-    ? (runs[1].done ? "both passes captured" : "pass B in progress…")
-    : (runs[0].done ? "pass A captured — now run the other condition" : "pass A in progress…");
-  if (sweepGround !== null) cap += ` · ground = pass ${sweepGround === 0 ? "A" : "B"}`;
+  let cap = `${caps.length}/4 captured (${caps.map(c => c.slot.key).join(",")})`;
   if (sweepResult) {
-    if (sweepResult.rejected) {
-      cap += ` · rejected (sep ${fmt(sweepResult.sep, 0)} < 45 — same condition twice?)`;
-    } else if (sweepResult.f != null) {
-      cap += ` · ${sweepResult.saved ? "saved" : "applied"} @ ${sweepResult.f}Hz `
-           + `dφ_thr=${fmt(sweepResult.dphi_thr, 0)} r_thr=${fmt(sweepResult.r_thr, 2)} sep=${fmt(sweepResult.sep, 0)}`;
-    }
+    if (sweepResult.rejected) cap += ` · rejected (sep ${fmt(sweepResult.sep, 0)} < 45)`;
+    else if (sweepResult.f != null) cap += ` · ${sweepResult.saved ? "saved" : "applied"} @ ${sweepResult.f}Hz `
+      + `dφ_thr=${fmt(sweepResult.dphi_thr, 0)} r_thr=${fmt(sweepResult.r_thr, 2)} sep=${fmt(sweepResult.sep, 0)}`;
   }
-  tbl.innerHTML = `<caption>probe sweep · ${cap}</caption><thead>${head}</thead><tbody>${body}</tbody>`;
+  tbl.innerHTML = `<caption>${M.lbl} per condition · ${cap}</caption><thead>${head}</thead><tbody>${rows}</tbody>`;
   tbl.hidden = false;
-  drawSweepCharts();
 }
 
 // ─── Probe-sweep charts ──────────────────────────────────────────────────────
-// Two views: (1) the selected metric for pass A (ground) vs pass B (air) on a
-// shared frequency axis, with the area between them shaded and the peak-gap
-// frequency flagged; (2) every metric's normalised air↔ground delta at once so
-// the cleanest-separating frequency/metric jumps out. Both are pure-canvas,
-// hi-dpi, and match the rest of the instrument panel's drawing language.
+// (1) The selected metric for every captured condition overlaid on a shared
+// frequency axis (one coloured trace per slot), with the saved probe tone
+// flagged. (2) The air − ground separation of that metric for each grip (firm
+// vs loose) — so you can see whether a looser grip erodes the detection margin.
+// Both are pure-canvas, hi-dpi, and match the panel's drawing language.
 function sweepCanvas(canvas) {
   const dpr = devicePixelRatio || 1;
   const w = canvas.width  = canvas.clientWidth  * dpr;
@@ -1590,30 +1619,30 @@ function drawSweepOverlay() {
   const canvas = document.getElementById("sweepOverlayCanvas");
   if (!canvas) return;
   const M = SWEEP_METRICS.find(m => m.k === sweepMetric) || SWEEP_METRICS[0];
-  // Pass A is always the amber trace, pass B the cyan one; the (gnd)/(air) tag
-  // comes from the FW's ground=<1|2>, so it's correct whichever order they ran.
-  const cond = i => sweepCond(i) ? ` (${sweepCond(i) === "gnd" ? "ground" : "air"})` : "";
   const capEl = document.getElementById("sweepOverlayCap");
-  if (capEl) capEl.textContent = `metric ${M.lbl} — pass A${cond(0)} vs pass B${cond(1)}`;
-  const legA = document.getElementById("swLegA"), legB = document.getElementById("swLegB");
-  if (legA) legA.textContent = `pass A${cond(0)}`;
-  if (legB) legB.textContent = `pass B${cond(1)}`;
-  const legProbe = document.getElementById("swLegProbe");
-  if (legProbe) legProbe.hidden = !(sweepResult && sweepResult.f != null && !sweepResult.rejected);
+  if (capEl) capEl.textContent = `metric ${M.lbl} — air vs ground × grip`;
   const { ctx, w, h, dpr } = sweepCanvas(canvas);
-  const runs = sweepRuns.filter(rn => rn.rows.length);
-  if (!runs.length) { sweepEmpty(ctx, w, h, dpr, "run a probe sweep"); return; }
-  const A = runs[0], B = runs[1] || null;
-
-  const allF = runs.flatMap(rn => rn.rows.map(x => x.f)).filter(v => v !== null);
+  const caps = sweepCaptured();
+  const legend = document.getElementById("sweepOverlayLegend");
+  if (!caps.length) {
+    sweepEmpty(ctx, w, h, dpr, "arm a slot, then run a probe sweep");
+    if (legend) legend.innerHTML = "";
+    return;
+  }
+  if (legend) {
+    let html = caps.map(c => `<span><i style="background:${c.slot.color}"></i>${c.slot.label}</span>`).join("");
+    if (sweepResult && sweepResult.f != null && !sweepResult.rejected)
+      html += `<span><i style="background:#e2ece9;height:9px;width:2px"></i>probe ${sweepResult.f}Hz</span>`;
+    legend.innerHTML = html;
+  }
+  const allF = caps.flatMap(c => c.run.rows.map(x => x.f)).filter(v => v !== null);
   let fmin = Math.min(...allF), fmax = Math.max(...allF);
   if (fmin === fmax) { fmin -= 1; fmax += 1; }
-  const vals = runs.flatMap(rn => rn.rows.map(x => x[M.k]))
-                   .filter(v => v !== null && v !== undefined && !Number.isNaN(v));
+  const vals = caps.flatMap(c => c.run.rows.map(x => x[M.k])).filter(v => v != null && !Number.isNaN(v));
   if (!vals.length) { sweepEmpty(ctx, w, h, dpr, `no ${M.lbl} data`); return; }
   let vmin = Math.min(...vals), vmax = Math.max(...vals);
   if (vmin === vmax) { vmin -= 1; vmax += 1; }
-  const vp = (vmax - vmin) * 0.14; vmin -= vp; vmax += vp;   // breathing room
+  const vp = (vmax - vmin) * 0.14; vmin -= vp; vmax += vp;
 
   const pad = { l: 40 * dpr, r: 10 * dpr, t: 14 * dpr, b: 22 * dpr };
   const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
@@ -1621,7 +1650,6 @@ function drawSweepOverlay() {
   const Y = v => pad.t + (1 - (v - vmin) / (vmax - vmin)) * ph;
   const freqs = [...new Set(allF)].sort((a, b) => a - b);
 
-  // Y grid + value labels
   ctx.fillStyle = "#7f908d";
   for (let i = 0; i <= 4; i++) {
     const v = vmin + (i / 4) * (vmax - vmin), y = Y(v);
@@ -1631,114 +1659,72 @@ function drawSweepOverlay() {
     ctx.textAlign = "right"; ctx.textBaseline = "middle";
     ctx.fillText(v.toFixed(M.dp), pad.l - 5 * dpr, y);
   }
-  // X freq labels
   ctx.textAlign = "center"; ctx.textBaseline = "top";
   for (const f of freqs) ctx.fillText(String(f), X(f), h - pad.b + 4 * dpr);
   ctx.textAlign = "right"; ctx.textBaseline = "bottom";
   ctx.fillText("Hz", w - pad.r, h - 1 * dpr);
 
-  const ptsOf = run => freqs.map(f => {
-    const row = run.rows.find(x => x.f === f);
-    return (row && row[M.k] != null && !Number.isNaN(row[M.k])) ? { f, x: X(f), y: Y(row[M.k]) } : null;
-  }).filter(Boolean);
-  const ptsA = ptsOf(A), ptsB = B ? ptsOf(B) : [];
-
-  // Shade the gap between the two passes (only common frequencies)
-  if (ptsB.length) {
-    const common = ptsA.filter(p => ptsB.find(q => q.f === p.f));
-    if (common.length > 1) {
-      ctx.beginPath();
-      common.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
-      for (let i = common.length - 1; i >= 0; i--) {
-        const q = ptsB.find(q => q.f === common[i].f);
-        ctx.lineTo(q.x, q.y);
-      }
-      ctx.closePath();
-      ctx.fillStyle = "rgba(255,180,84,0.10)";
-      ctx.fill();
-    }
-  }
-  const line = (pts, color) => {
-    if (!pts.length) return;
-    ctx.strokeStyle = color; ctx.lineWidth = 2 * dpr;
+  for (const c of caps) {
+    const pts = freqs.map(f => {
+      const row = c.run.rows.find(x => x.f === f);
+      return (row && row[M.k] != null && !Number.isNaN(row[M.k])) ? { x: X(f), y: Y(row[M.k]) } : null;
+    }).filter(Boolean);
+    if (!pts.length) continue;
+    ctx.strokeStyle = c.slot.color; ctx.lineWidth = 2 * dpr;
     ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke();
-    ctx.fillStyle = color;
+    ctx.fillStyle = c.slot.color;
     for (const p of pts) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.6 * dpr, 0, 2 * Math.PI); ctx.fill(); }
-  };
-  line(ptsA, "#ffb454");
-  line(ptsB, "#46d6c4");
-
-  // Chosen probe-frequency marker (the tone the saved thresholds live at).
+  }
   if (sweepResult && sweepResult.f != null && !sweepResult.rejected &&
       sweepResult.f >= fmin && sweepResult.f <= fmax) {
     const x = X(sweepResult.f);
-    ctx.strokeStyle = "#54d07f"; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([]);
+    ctx.strokeStyle = "#e2ece9"; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
-    ctx.fillStyle = "#54d07f"; ctx.textBaseline = "bottom"; ctx.textAlign = "center";
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#e2ece9"; ctx.textBaseline = "bottom"; ctx.textAlign = "center";
     ctx.fillText(`probe ${sweepResult.f}Hz`, Math.min(Math.max(x, pad.l + 26 * dpr), w - pad.r - 26 * dpr), h - pad.b - 1 * dpr);
-  }
-
-  // Peak-separation marker — the frequency where the two passes differ most.
-  if (B) {
-    let pf = null, pd = -1;
-    for (const f of freqs) {
-      const a = A.rows.find(x => x.f === f), b = B.rows.find(x => x.f === f);
-      if (a && b && a[M.k] != null && b[M.k] != null) {
-        const d = Math.abs(b[M.k] - a[M.k]);
-        if (d > pd) { pd = d; pf = f; }
-      }
-    }
-    if (pf != null) {
-      const x = X(pf);
-      ctx.strokeStyle = "#f1c34c"; ctx.lineWidth = 1 * dpr; ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
-      ctx.setLineDash([]);
-      const lbl = `Δ${pd.toFixed(M.dp)} @ ${pf}Hz`;
-      ctx.fillStyle = "#f1c34c"; ctx.textBaseline = "top";
-      const tw = ctx.measureText(lbl).width;
-      ctx.textAlign = "left";
-      const tx = Math.min(Math.max(x + 4 * dpr, pad.l), w - pad.r - tw);
-      ctx.fillText(lbl, tx, pad.t + 1 * dpr);
-    }
   }
 }
 function drawSweepDelta() {
   const canvas = document.getElementById("sweepDeltaCanvas");
   if (!canvas) return;
+  const M = SWEEP_METRICS.find(m => m.k === sweepMetric) || SWEEP_METRICS[0];
+  const capEl = document.getElementById("sweepDeltaCap");
+  if (capEl) capEl.textContent = `${M.lbl} separation (air − ground) by grip`;
   const { ctx, w, h, dpr } = sweepCanvas(canvas);
   const legend = document.getElementById("sweepDeltaLegend");
-  const runs = sweepRuns.filter(rn => rn.rows.length);
-  const A = runs[0], B = runs[1] || null;
-  if (!A || !B) {
-    sweepEmpty(ctx, w, h, dpr, "run pass B to compare");
+  const valAt = (run, f) => { const row = run && run.rows.find(x => x.f === f); return row ? row[M.k] : null; };
+  const grips = [
+    { grip: "firm",  lbl: "firm grip",  color: "#46d6c4" },
+    { grip: "loose", lbl: "loose grip", color: "#f1c34c" },
+  ];
+  const series = grips.map(g => {
+    const ground = sweepRunByCG("ground", g.grip), air = sweepRunByCG("air", g.grip);
+    if (!ground || !air) return null;
+    const fs = [...new Set([...ground.rows, ...air.rows].map(x => x.f).filter(v => v !== null))].sort((a, b) => a - b);
+    const data = fs.map(f => {
+      const gv = valAt(ground, f), av = valAt(air, f);
+      return (gv == null || av == null) ? null : { f, v: av - gv };
+    }).filter(Boolean);
+    return data.length ? { ...g, data } : null;
+  }).filter(Boolean);
+
+  if (!series.length) {
+    sweepEmpty(ctx, w, h, dpr, "capture an air+ground pair (A+B or C+D)");
     if (legend) legend.innerHTML = "";
     return;
   }
-  if (legend) legend.innerHTML = SWEEP_METRICS
-    .map(m => `<span><i style="background:${m.color}"></i>${m.lbl}</span>`).join("");
+  if (legend) legend.innerHTML = series.map(s => `<span><i style="background:${s.color}"></i>${s.lbl}</span>`).join("");
 
-  const freqs = [...new Set([...A.rows, ...B.rows].map(x => x.f).filter(v => v !== null))]
-                  .sort((a, b) => a - b);
-  // Normalised delta per (freq, metric): (B − A) / max(|A|,|B|) → fraction in ~[-1,1].
-  const eps = 1e-9;
-  const data = freqs.map(f => {
-    const a = A.rows.find(x => x.f === f), b = B.rows.find(x => x.f === f);
-    return SWEEP_METRICS.map(m => {
-      if (!a || !b || a[m.k] == null || b[m.k] == null) return null;
-      const denom = Math.max(Math.abs(a[m.k]), Math.abs(b[m.k]), eps);
-      return (b[m.k] - a[m.k]) / denom;
-    });
-  });
-  const flat = data.flat().filter(v => v != null && !Number.isNaN(v));
-  if (!flat.length) { sweepEmpty(ctx, w, h, dpr, "no paired data yet"); return; }
-  const amax = Math.max(0.2, ...flat.map(Math.abs)) * 1.18;   // symmetric range
+  const freqs = [...new Set(series.flatMap(s => s.data.map(d => d.f)))].sort((a, b) => a - b);
+  const flat = series.flatMap(s => s.data.map(d => d.v));
+  const amax = Math.max(1e-6, ...flat.map(Math.abs)) * 1.18;
 
-  const pad = { l: 36 * dpr, r: 10 * dpr, t: 10 * dpr, b: 22 * dpr };
+  const pad = { l: 40 * dpr, r: 10 * dpr, t: 10 * dpr, b: 22 * dpr };
   const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
   const Y = v => pad.t + (1 - (v + amax) / (2 * amax)) * ph;
   const y0 = Y(0);
 
-  // Y grid (+amax, 0, −amax) with labels
   ctx.fillStyle = "#7f908d";
   for (const v of [amax, amax / 2, 0, -amax / 2, -amax]) {
     const y = Y(v);
@@ -1747,28 +1733,26 @@ function drawSweepDelta() {
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
     ctx.setLineDash([]);
     ctx.textAlign = "right"; ctx.textBaseline = "middle";
-    ctx.fillText((v >= 0 ? "+" : "") + v.toFixed(1), pad.l - 5 * dpr, y);
+    ctx.fillText((v >= 0 ? "+" : "") + v.toFixed(M.dp), pad.l - 5 * dpr, y);
   }
 
-  // Grouped bars: per frequency, one thin bar per metric
   const groupW = pw / freqs.length;
-  const nM = SWEEP_METRICS.length;
-  const barW = Math.min(11 * dpr, (groupW * 0.72) / nM);
+  const nS = series.length;
+  const barW = Math.min(13 * dpr, (groupW * 0.7) / nS);
   freqs.forEach((f, gi) => {
     const gx = pad.l + groupW * gi + groupW / 2;
-    const span = barW * nM;
-    SWEEP_METRICS.forEach((m, mi) => {
-      const v = data[gi][mi];
-      if (v == null || Number.isNaN(v)) return;
-      const bx = gx - span / 2 + barW * mi;
-      const by = Y(Math.max(Math.min(v, amax), -amax));
-      ctx.fillStyle = m.color;
+    const span = barW * nS;
+    series.forEach((s, si) => {
+      const d = s.data.find(x => x.f === f);
+      if (!d) return;
+      const bx = gx - span / 2 + barW * si;
+      const by = Y(Math.max(Math.min(d.v, amax), -amax));
+      ctx.fillStyle = s.color;
       ctx.fillRect(bx, Math.min(by, y0), Math.max(1, barW - 1 * dpr), Math.abs(by - y0) || 1);
     });
     ctx.fillStyle = "#7f908d"; ctx.textAlign = "center"; ctx.textBaseline = "top";
     ctx.fillText(String(f), gx, h - pad.b + 4 * dpr);
   });
-  // re-stroke the zero line on top so bars don't bury it
   ctx.strokeStyle = "#33474d"; ctx.lineWidth = 1.5 * dpr;
   ctx.beginPath(); ctx.moveTo(pad.l, y0); ctx.lineTo(w - pad.r, y0); ctx.stroke();
 }
@@ -1778,22 +1762,33 @@ function drawSweepCharts() {
   drawSweepOverlay();
   drawSweepDelta();
 }
-// Metric tabs switch which signal the overlay graph plots.
+// Wire the metric tabs (table + both charts follow the selected metric), the
+// A/B/C/D slot picker, and the clear button.
 (() => {
   const tabs = document.getElementById("sweepTabs");
-  if (!tabs) return;
-  tabs.addEventListener("click", (e) => {
+  if (tabs) tabs.addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-m]");
     if (!btn) return;
     sweepMetric = btn.dataset.m;
     for (const b of tabs.querySelectorAll("button")) b.classList.toggle("active", b === btn);
-    drawSweepOverlay();
+    refreshSweep();
   });
-  // Redraw on resize — also fires when the Balancing pane is first expanded
-  // (canvas goes from 0-width to laid-out), which paints the initial frames.
+  const slots = document.getElementById("sweepSlots");
+  if (slots) slots.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-slot]");
+    if (!btn) return;
+    sweepArmed = +btn.dataset.slot;
+    updateSweepPicker();
+  });
+  const clr = document.getElementById("sweepClear");
+  if (clr) clr.addEventListener("click", clearSweep);
+
+  // Redraw on resize — also fires when the Balancing pane is first expanded.
   const ro = new ResizeObserver(() => drawSweepCharts());
-  ro.observe(document.getElementById("sweepOverlayCanvas"));
-  ro.observe(document.getElementById("sweepDeltaCanvas"));
+  const oc = document.getElementById("sweepOverlayCanvas"), dc = document.getElementById("sweepDeltaCanvas");
+  if (oc) ro.observe(oc);
+  if (dc) ro.observe(dc);
+  updateSweepPicker();
   drawSweepCharts();   // initial empty-state render
 })();
 
