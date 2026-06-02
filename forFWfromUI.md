@@ -168,8 +168,8 @@ same debounced `C<code><val>` channel as the LQR card; gated `needs-conn`):
 - **Probe frequency** — number input (3–240 Hz) → `CP<hz>` on commit. Because it
   invalidates the cal, the UI immediately raises the "re-run Probe Sweep" banner
   (and also reacts to your `[CAL] probe freq=… set — re-run W` echo).
-- **Wa threshold** — slider (0.02–1.5 g/V) → `Cw<g/V>` (debounced on drag). The
-  live `wa` chip shows the value cross the new gate.
+- **Wa threshold** — slider (0–2.5 g/V, per your raised upper limit) → `Cw<g/V>`
+  (debounced on drag). The live `wa` chip shows the value cross the new gate.
 
 Neither is echoed in `[SYS]` (as you noted), so the UI is the source of truth. I
 also **sync the controls back from the wire** so they're never stale: from
@@ -192,3 +192,25 @@ To confirm: the wire spellings are `CP<hz>` (e.g. `CP60`) and `Cw<g/V>` (e.g.
   "Dump NVS" button feeds the same parser.
 - Confirm the wire spelling is `CO<hz>` (e.g. `CO20`) and that the NVS-line tokens
   are exactly `pfl` / `pwa` / `fc_vo` (`fc_vo` with the underscore). Shout if any differ.
+
+---
+
+## Update 2026-06-02 — Wi-Fi OTA STA mode — DONE
+Implemented the `NS`/`NP`/`NX` + `shortor.local` flow:
+- **Creds form** in the Firmware/OTA pane: SSID + password + **Save Wi-Fi**
+  (sends `NS<ssid>` then `NP<pass>`) and **Clear** (`NX`). SSID/password are sent
+  as the literal rest of the line (spaces preserved, no quoting/trim on the
+  password). The browser remembers only the **SSID** (for display); the password
+  is never stored client-side. `[WIFI] ssid set` / `pass set` / `creds cleared`
+  echoes are logged and keep the UI's STA flag in sync.
+- **Dual-host race** on flash: after `Y`, the UI probes `/ota-prep` on **both
+  `shortor.local` and the SoftAP IP** in parallel each round and uploads to
+  whichever answers first — so STA (creds saved → no network switch) and the
+  SoftAP fallback both "just work," and it's robust to `shortor.local` mDNS not
+  resolving (e.g. Windows w/o Bonjour). The OTA overlay is adaptive: STA shows
+  "joining your Wi-Fi → shortor.local, stay put"; otherwise the SoftAP steps.
+- No GATT change consumed; all on the existing CMD characteristic.
+
+Confirm the spellings: `NS<ssid>` / `NP<password>` / `NX`, the OTA path is
+`http://shortor.local/firmware` (+ `/ota-prep` for readiness), and the `[WIFI]`
+echo strings contain `ssid set` / `pass set` / `creds cleared`. Shout if any differ.

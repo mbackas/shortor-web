@@ -882,6 +882,14 @@
     text-transform: uppercase;
     margin-bottom: 16px;
   }
+  .ota-banner .ota-sta-msg {
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--fg);
+    margin: 0 0 16px;
+  }
+  .ota-banner .ota-sta-msg code { color: var(--cyan); }
   /* Numbered walkthrough — left-aligned, amber step chips. */
   .ota-banner .ota-steps {
     list-style: none;
@@ -1225,7 +1233,7 @@
         <div class="slider-row">
           <label for="cfgWaThr" title="Wa entry threshold (g/V). Sent as Cw&lt;g/V&gt;. Normally set by the sweep; override to tune — watch the live wa chip cross it.">Wa threshold</label>
           <span class="value" id="cfgWaThrVal">0.42 g/V</span>
-          <input type="range" id="cfgWaThr" min="0.02" max="1.5" step="0.01" value="0.42">
+          <input type="range" id="cfgWaThr" min="0" max="2.5" step="0.01" value="0.42">
         </div>
       </div>
       <div id="sweepStale" class="sweep-stale" hidden>⚠ probe cal is stale — re-run Probe Sweep <span id="sweepStaleDetail"></span></div>
@@ -1287,14 +1295,28 @@
         <code>firmware.bin</code> once and the browser remembers it
         — subsequent flashes are just one click on <b>Flash firmware</b>
         (Chromium-only; on other browsers, drag the file in or use the
-        picker each time). Chip reboots into its own SoftAP
-        <code>Shortor-OTA</code>; join that network and the upload to
-        <code>192.168.4.1</code> starts automatically.
+        picker each time). Save your <b>Wi-Fi</b> below and the knob joins
+        <i>your</i> network at <code>shortor.local</code> — no switching.
+        Leave it blank and the knob falls back to its own
+        <code>Shortor-OTA</code> SoftAP (<code>192.168.4.1</code>).
+        Flash hunts both automatically.
       </p>
       <div class="row">
-        <label for="otaHost" class="field-label">OTA IP</label>
+        <label for="wifiSsid" class="field-label">Wi-Fi</label>
+        <input type="text" id="wifiSsid" class="grow" placeholder="Your network name (SSID)" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="row">
+        <input type="password" id="wifiPass" class="grow" placeholder="Password" autocomplete="off">
+        <button id="btnWifiSave" class="needs-conn" title="Send Wi-Fi creds to the knob (NS/NP) so it joins your network for OTA at shortor.local — no network switching.">Save Wi-Fi</button>
+        <button id="btnWifiClear" class="needs-conn" title="Clear the knob's stored Wi-Fi (NX) — OTA then falls back to the Shortor-OTA SoftAP.">Clear</button>
+      </div>
+      <div class="row">
+        <span id="wifiHint" class="stat" style="font-size: 11px;">Sent once (NS/NP) and stored on the knob. Password isn't saved in the browser.</span>
+      </div>
+      <div class="row">
+        <label for="otaHost" class="field-label">SoftAP IP</label>
         <input type="text" id="otaHost" class="grow" placeholder="192.168.4.1" value="192.168.4.1"
-               title="Knob SoftAP IP — used by Flash firmware">
+               title="Knob SoftAP IP — fallback when no Wi-Fi creds are stored. Flash also tries shortor.local.">
       </div>
       <div class="row">
         <input type="file" id="firmwareFile" class="grow" accept=".bin">
@@ -1324,7 +1346,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 29, date: "2026-06-01" };
+const APP_BUILD = { ver: 30, date: "2026-06-02" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2112,6 +2134,12 @@ class BleTransport {
           const wt = text.match(/\bwa_thr=([\d.]+)\s*set/i);
           if (wt) syncWaThr(parseFloat(wt[1]));
         }
+        // [WIFI] ssid/pass set | creds cleared — keep the STA flag in sync with
+        // the knob's confirmation (e.g. creds cleared from elsewhere).
+        if (text && /^\[WIFI\]/i.test(text)) {
+          if (/cleared/i.test(text)) { wifiStaConfigured = false; refreshWifiHint(); }
+          else if (/ssid\s+set/i.test(text)) { wifiStaConfigured = true; refreshWifiHint(); }
+        }
         log("← " + (text || "(empty event)"));
       });
       log("Subscribed to FOC event channel.", "ok");
@@ -2737,67 +2765,86 @@ async function flashFirmware(file) {
   const banner   = document.getElementById("otaBanner");
   const statusEl = document.getElementById("otaStatus");
   const statusTx = document.getElementById("otaStatusText");
+  const titleEl  = document.getElementById("otaTitle");
+  // Adaptive guidance: STA (creds saved → the knob joins your network and we
+  // never switch WiFi) vs the SoftAP walkthrough.
+  const staSsid = (() => { try { return localStorage.getItem(WIFI_SSID_LS); } catch (e) { return null; } })();
+  const staEl = document.getElementById("otaSta"), softEl = document.getElementById("otaSoftap");
+  if (staEl)  staEl.hidden  = !wifiStaConfigured;
+  if (softEl) softEl.hidden = wifiStaConfigured;
+  if (titleEl) titleEl.textContent = wifiStaConfigured ? "Flashing over your Wi-Fi" : "Switch to the knob's WiFi";
+  const ssidLbl = document.getElementById("otaStaSsid");
+  if (ssidLbl && staSsid) ssidLbl.textContent = `“${staSsid}”`;
   if (statusEl) statusEl.classList.remove("connected");
   if (banner) banner.classList.add("show");
 
-  // Live "waiting" counter so the overlay visibly ticks while the user
-  // switches WiFi (reassures them it's actively probing, not hung).
+  // Live "waiting" counter so the overlay visibly ticks (reassures the user
+  // it's actively probing, not hung).
+  const waitMsg = wifiStaConfigured
+    ? "Waiting for the knob on your Wi-Fi (shortor.local)…"
+    : "Waiting for you to join Shortor-OTA…";
   const waitT0 = performance.now();
   const waitTimer = setInterval(() => {
     if (!statusTx) return;
     const s = Math.round((performance.now() - waitT0) / 1000);
-    statusTx.textContent = `Waiting for you to join Shortor-OTA… ${s}s`;
+    statusTx.textContent = `${waitMsg} ${s}s`;
   }, 1000);
 
-  // Brief settle before we start hammering /ota-prep. The chip's
-  // restart + SoftAP bring-up is in the 700–1000 ms range; this just
-  // avoids burning ~5 wasted polls during the bootloader phase.
+  // Brief settle before we start hammering /ota-prep. The chip's restart +
+  // WiFi/SoftAP bring-up is in the 700–1000 ms range; this just avoids burning
+  // wasted polls during the bootloader phase.
   await new Promise(r => setTimeout(r, 400));
 
-  log("→ Join 'Shortor-OTA' WiFi (open, no password). If it sits on 'waiting', toggle WiFi off/on to force-detect. Flash starts automatically once connected.", "warn");
+  log(wifiStaConfigured
+    ? "→ Knob is joining your Wi-Fi — stay on your network. Flash starts once it answers at shortor.local."
+    : "→ Join 'Shortor-OTA' WiFi (open, no password). If it sits on 'waiting', toggle WiFi off/on to force-detect.", "warn");
 
-  // Poll /ota-prep until the HTTP server answers. Generous window
-  // (~90 s) since the user may take a few seconds to switch WiFi.
-  log(`Waiting for http://${host}/ to come up...`, "warn");
-  let alive = false;
-  for (let i = 0; i < 120; i++) {
+  // Dual-host race: probe shortor.local (STA) and the SoftAP IP in parallel each
+  // round; whichever /ota-prep answers first becomes the upload host. Covers
+  // both modes (and mDNS not resolving) without the UI needing to know which.
+  const candidates = [...new Set(["shortor.local", host].filter(Boolean))];
+  log(`Looking for the knob at ${candidates.map(h => `http://${h}/`).join("  ·  ")} …`, "warn");
+  const probe = async (h) => {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 700);
-      const resp = await fetch(`http://${host}/ota-prep`,
-                               { mode: "cors", cache: "no-store",
-                                 signal: ctrl.signal });
+      const resp = await fetch(`http://${h}/ota-prep`, { mode: "cors", cache: "no-store", signal: ctrl.signal });
       clearTimeout(t);
-      if (resp.ok) { alive = true; break; }
-    } catch (e) { /* retry */ }
-    await new Promise(r => setTimeout(r, 250));
+      return resp.ok ? h : null;
+    } catch (e) { return null; }
+  };
+  let liveHost = null;
+  for (let i = 0; i < 120 && !liveHost; i++) {
+    const hits = await Promise.all(candidates.map(probe));
+    liveHost = hits.find(Boolean) || null;
+    if (!liveHost) await new Promise(r => setTimeout(r, 250));
   }
   clearInterval(waitTimer);
-  // Flip the overlay to a green "connected" beat so the WiFi switch is
-  // visibly acknowledged before the dim clears and the upload begins.
-  if (alive && statusEl && statusTx) {
+  // Flip the overlay to a green "connected" beat so the path is visibly
+  // acknowledged before the dim clears and the upload begins.
+  if (liveHost && statusEl && statusTx) {
     statusEl.classList.add("connected");
-    statusTx.textContent = "Connected to the knob — flashing now!";
+    statusTx.textContent = `Connected via ${liveHost} — flashing now!`;
     await new Promise(r => setTimeout(r, 650));
   }
-  // Dim clears as soon as we have an HTTP path to the chip, regardless
-  // of whether the upload itself ultimately succeeds.
   if (banner) banner.classList.remove("show");
-  if (!alive) {
+  if (!liveHost) {
     log("Knob HTTP never came up — wrong network? Aborting.", "bad");
     prog.style.display = "none";
     flashInFlight = false;   // early return skips the upload's finally{}
-    showFlashResult(false, `Couldn't reach the knob at ${host}. Make sure you joined the "Shortor-OTA" WiFi, then try again.`);
+    showFlashResult(false, wifiStaConfigured
+      ? `Couldn't reach the knob at shortor.local or ${host}. It may have fallen back to the "Shortor-OTA" SoftAP — join that and retry.`
+      : `Couldn't reach the knob at ${host}. Make sure you joined the "Shortor-OTA" WiFi, then try again.`);
     return;
   }
 
-  log(`Uploading ${file.name} (${file.size} bytes) → http://${host}/firmware ...`);
+  log(`Uploading ${file.name} (${file.size} bytes) → http://${liveHost}/firmware ...`);
   const t0 = performance.now();
   try {
     const fd = new FormData(); fd.append("firmware", file, file.name);
     await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", `http://${host}/firmware`);
+      xhr.open("POST", `http://${liveHost}/firmware`);
       xhr.upload.onprogress = e => {
         if (e.lengthComputable) prog.value = e.loaded / e.total;
       };
@@ -2817,6 +2864,54 @@ async function flashFirmware(file) {
     flashInFlight = false;
   }
 }
+
+// ─── Wi-Fi STA creds for OTA ─────────────────────────────────────────────────
+// NS<ssid>/NP<pass> tell the knob to join your network (mDNS shortor.local) for
+// OTA so the laptop never switches WiFi; NX clears them (→ Shortor-OTA SoftAP).
+// SSID/password are the literal rest of the line (spaces allowed). The knob
+// keeps both in NVS; the browser remembers only the SSID (for display).
+const WIFI_SSID_LS = "shortor_wifi_ssid";
+let wifiStaConfigured = false;
+function refreshWifiHint() {
+  const hint = document.getElementById("wifiHint");
+  if (!hint) return;
+  let ssid = null; try { ssid = localStorage.getItem(WIFI_SSID_LS); } catch (e) {}
+  hint.textContent = wifiStaConfigured
+    ? `Saved — the knob will join “${ssid || "your network"}” for OTA (shortor.local). Re-enter the password only to change it.`
+    : "Sent once (NS/NP) and stored on the knob. Password isn't saved in the browser.";
+}
+(() => {
+  const ssidEl = document.getElementById("wifiSsid");
+  let savedSsid = null; try { savedSsid = localStorage.getItem(WIFI_SSID_LS); } catch (e) {}
+  if (savedSsid && ssidEl) { ssidEl.value = savedSsid; wifiStaConfigured = true; }
+  refreshWifiHint();
+
+  const save = document.getElementById("btnWifiSave");
+  if (save) save.onclick = async () => {
+    if (!transport || !transport.isConnected()) return log("Connect to the knob first.", "bad");
+    const ssid = (document.getElementById("wifiSsid").value || "").trim();
+    const pass = document.getElementById("wifiPass").value || "";   // not trimmed — passwords may have spaces
+    if (!ssid) return log("Enter a Wi-Fi network name (SSID).", "bad");
+    try {
+      await transport.writeCmd(`NS${ssid}\n`);
+      if (pass) await transport.writeCmd(`NP${pass}\n`);
+      try { localStorage.setItem(WIFI_SSID_LS, ssid); } catch (e) {}
+      wifiStaConfigured = true; refreshWifiHint();
+      log(`Wi-Fi sent to knob (SSID “${ssid}”${pass ? "" : " — no password"}). It’ll join on the next OTA (Y).`, "ok");
+    } catch (e) { log("Wi-Fi send failed: " + e.message, "bad"); }
+  };
+  const clear = document.getElementById("btnWifiClear");
+  if (clear) clear.onclick = async () => {
+    if (!transport || !transport.isConnected()) return log("Connect to the knob first.", "bad");
+    try {
+      await transport.writeCmd("NX\n");
+      try { localStorage.removeItem(WIFI_SSID_LS); } catch (e) {}
+      const pe = document.getElementById("wifiPass"); if (pe) pe.value = "";
+      wifiStaConfigured = false; refreshWifiHint();
+      log("Wi-Fi creds cleared — OTA will use the Shortor-OTA SoftAP.", "ok");
+    } catch (e) { log("Clear failed: " + e.message, "bad"); }
+  };
+})();
 
 // Manual Flash button — tries (in order):
 //   1. Remembered FileSystemFileHandle (Chromium, persisted in IDB)
@@ -3956,19 +4051,30 @@ if (!("serial" in navigator)) {
 
 <div id="otaBanner" class="ota-banner">
   <div class="card">
-    <div class="title">Switch to the knob's WiFi</div>
-    <ol class="ota-steps">
-      <li>Open your device's <b>WiFi settings</b>.</li>
-      <li>Join the <span class="ssid">Shortor-OTA</span> network <span class="ota-note">— open, no password.</span></li>
-      <li>Return here — the flash starts on its own.</li>
-    </ol>
-    <div class="ota-tip">
-      ⚡ <b>Stuck on “waiting”?</b> Toggle WiFi <b>off, then on</b> (or “forget” &amp;
-      rejoin <code>Shortor-OTA</code>) to force your device onto the knob immediately.
+    <div class="title" id="otaTitle">Switch to the knob's WiFi</div>
+    <div id="otaSta" hidden>
+      <p class="ota-sta-msg">The knob is joining <b id="otaStaSsid">your Wi-Fi</b> and will serve the
+      update at <code>shortor.local</code>. <b>Stay on your network</b> — the flash starts on its own.</p>
+      <div class="ota-tip">
+        ⚡ <b>Taking a while?</b> The knob needs a few seconds to join and announce
+        <code>shortor.local</code>. If it never appears, it may have fallen back to the
+        <code>Shortor-OTA</code> SoftAP — join that instead.
+      </div>
+    </div>
+    <div id="otaSoftap">
+      <ol class="ota-steps">
+        <li>Open your device's <b>WiFi settings</b>.</li>
+        <li>Join the <span class="ssid">Shortor-OTA</span> network <span class="ota-note">— open, no password.</span></li>
+        <li>Return here — the flash starts on its own.</li>
+      </ol>
+      <div class="ota-tip">
+        ⚡ <b>Stuck on “waiting”?</b> Toggle WiFi <b>off, then on</b> (or “forget” &amp;
+        rejoin <code>Shortor-OTA</code>) to force your device onto the knob immediately.
+      </div>
     </div>
     <div class="ota-status" id="otaStatus">
       <span class="ota-dot"></span>
-      <span id="otaStatusText">Waiting for you to join Shortor-OTA…</span>
+      <span id="otaStatusText">Waiting for the knob…</span>
     </div>
   </div>
 </div>
