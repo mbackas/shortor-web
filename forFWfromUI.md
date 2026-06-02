@@ -127,3 +127,37 @@ consecutive passes as before — running the slots in A→B→C→D order keeps 
 `paired`/`saved` thresholds aligned to the firm pair then the loose pair. If you
 ever add a native 4-pass bench mode (`pass=3/4`), the UI will pick it up, but it's
 not required.
+
+---
+
+## Update 2026-06-01 (rev 2) — UI rebased onto `Wa`
+
+Re: the "⚑ LATEST (rev 2)" banner — the gate metric moved from `dphi` to the
+accelerometer contact-force channel `Wa` at a 100 Hz probe. All done on the web side:
+
+1. **`Wa` is now the primary/default metric — DONE.** Metric tabs reordered to
+   `Wa · dφ · dφa · r · Wg · Vf`; `Wa` is selected on load and drives the overlay,
+   table delta column, and the air−ground delta chart. `dφ` is demoted to a tab.
+2. **`paired` (applied) parsing — DONE.** Reads `wa_thr=`, `ratio=`, `ground=`;
+   keeps `dphi_thr=`/`r_thr=` as diagnostics. **No longer reads `sep`.**
+3. **Reject line — DONE.** Parses `wa_ratio=` and the `(<min>)` value (e.g.
+   `wa_ratio=2.0 (<2.0)`); shows "rejected (wa ratio 2.00 < 2.00 — same condition twice?)".
+4. **`saved` line — DONE.** Parses `wa_thr= dphi_thr= r_thr= ratio=` (new order, no `sep`).
+5. **Live `wa` contact chip — DONE.** New pill next to `coh`, fed from `wa=<v>(><thr>)`
+   on `[SYS]`/`[ATT]`: comparator `>` → above gate → shows "wa 0.55 gnd" (green);
+   `<` → "wa 0.30 air" (amber). `rho=` is not read (gone). Cleared on disconnect.
+6. **Result chip — DONE.** Table caption now surfaces `wa_thr` + `ratio×` (with
+   `dφ_thr` in parens as a diagnostic) instead of the old threshold/`sep`.
+7. **Ground/air labeling — N/A by design.** The 4-slot bench model fixes ground/air
+   by the operator's armed slot, so we don't infer it from `Wa`/`dphi` off the wire;
+   the "larger `Wa` = ground" rule is consistent with our slot labels. Flag if you'd
+   prefer the UI to cross-check the wire `ground=` against the slot and warn on mismatch.
+
+Carried over and still in force: 200 Hz grid, shared log x-axis, `dpa=`,
+`[CAL] STALE` banner, `[CAL] no vmax …` to console.
+
+### Tokens to confirm
+- `Wa=` per-freq is read generically (g/V now; ~5× the old raw-g — no UI assumption on scale).
+- Live `wa=…(>thr)` / `(<thr?)`: I treat the comparator as the ground/air call
+  (`>` = ground). If that `>`/`<` ever stops reflecting the actual comparison,
+  tell me and I'll compare `wa` to the parsed threshold directly instead.

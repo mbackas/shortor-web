@@ -1219,14 +1219,14 @@
       <div class="sweep-wrap"><table id="sweepTable" class="sweep-table" hidden></table></div>
       <div id="sweepCharts" class="sweep-charts">
         <div class="sweep-tabs" id="sweepTabs" role="tablist">
-          <button type="button" data-m="dphi" class="active">dφ</button>
-          <button type="button" data-m="Wa" title="Forward-accel / contact-force amplitude (g) — usually the cleanest ground/air discriminator">Wa</button>
+          <button type="button" data-m="Wa" class="active" title="Forward-accel / contact-force amplitude (g/V) — the detector's gate metric and cleanest ground/air discriminator">Wa</button>
+          <button type="button" data-m="dphi" title="Body-vs-wheel phase (deg) — now a diagnostic">dφ</button>
           <button type="button" data-m="dpa" title="Forward-accel-vs-wheel phase (deg)">dφa</button>
           <button type="button" data-m="r">r</button>
           <button type="button" data-m="Wg">Wg</button>
           <button type="button" data-m="Vf">Vf</button>
         </div>
-        <div class="sweep-chart-cap" id="sweepOverlayCap">phase dφ — all conditions</div>
+        <div class="sweep-chart-cap" id="sweepOverlayCap">Wa — all conditions</div>
         <canvas id="sweepOverlayCanvas" height="210"></canvas>
         <div class="sweep-legend" id="sweepOverlayLegend"></div>
         <div class="sweep-chart-cap" id="sweepDeltaCap">air − ground separation by grip</div>
@@ -1251,6 +1251,7 @@
         <span id="liveTap" class="pill live">taps 0/0</span>
         <span id="liveFFWake" class="pill live">ff/wk 0/0</span>
         <span id="liveLoopHz" class="pill live" title="Actual control-loop rate, reported once/sec by the chip">— Hz</span>
+        <span id="liveContact" class="pill" title="Ground-contact gate: forward-accel response Wa (g/V) vs its threshold. Above threshold (gnd) = the wheel is pushing against the ground; below (air) = lifted / free.">wa —</span>
         <span id="liveCoh" class="pill" title="Lift-detector confidence: probe-tone phase coherence (0–1). High = phase reading is trustworthy; low = taps / noise / no response, so the ground↔air call can't be relied on.">coh —</span>
         <span id="deviceInfo" class="pill"></span>
         <span id="fwBuildPill" class="pill" title="Firmware build tag (HHMM the .bin was compiled)">fw —</span>
@@ -1310,7 +1311,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 27, date: "2026-06-01" };
+const APP_BUILD = { ver: 28, date: "2026-06-01" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1457,6 +1458,18 @@ function setCoh(v) {
   el.className = "pill " + (v >= 0.6 ? "ok" : v >= 0.3 ? "warn" : "bad");
 }
 
+// Live ground-contact chip — Wa (g/V) vs its gate from [SYS]/[ATT]. Above the
+// threshold (the firmware shows "wa=0.55(>0.42)") = on the ground → green.
+function setContact(v, ground) {
+  const el = document.getElementById("liveContact");
+  if (!el) return;
+  if (v === null || v === undefined || Number.isNaN(v)) {
+    el.textContent = "wa —"; el.className = "pill"; return;
+  }
+  el.textContent = `wa ${v.toFixed(2)} ${ground ? "gnd" : "air"}`;
+  el.className = "pill " + (ground ? "ok" : "warn");
+}
+
 // ─── Probe-sweep capture (A/B/C/D condition×grip slots) ──────────────────────
 // FW emits bracket-tagged "[SWP]" events (see shortor/Firmware/forUIfromFW.md):
 //   [SWP] pass=N begin … / f=… dphi=… r=… Vf=… Wg=… / pass=N captured …
@@ -1481,20 +1494,21 @@ const SWEEP_SLOTS = [
 const SWEEP_CATS = ["ground", "air"];   // display grouping order
 const sweepRuns = [null, null, null, null];   // per-slot { rows:[{f,dphi,r,Vf,Wg}], done }
 let sweepArmed  = 0;               // slot index the next W run fills
-const SWEEP_PRIMARY = "dphi";      // the metric detection keys on
-// dphi = body-vs-wheel phase (deg, primary); Wa = forward-accel / contact-force
-// amplitude (g — often the cleanest ground/air discriminator); dpa = accel-vs-
-// wheel phase (deg); r = inertia ratio (fallback); Wg = gyro amp; Vf = wheel-vel amp.
+const SWEEP_PRIMARY = "Wa";        // the metric the detector gates on (rev 2)
+// Wa = forward-accel / contact-force amplitude (g/V, PRIMARY — large on the
+// ground where wheel torque pushes the body, collapses in the air); dphi =
+// body-vs-wheel phase (deg, now diagnostic); dpa = accel-vs-wheel phase (deg);
+// r = inertia ratio (fallback); Wg = gyro amp; Vf = wheel-vel amp.
 const SWEEP_METRICS = [
-  { k: "dphi", lbl: "dφ",  dp: 0, color: "#ffb454" },
-  { k: "Wa",   lbl: "Wa",  dp: 3, color: "#46d6c4" },
+  { k: "Wa",   lbl: "Wa",  dp: 3, color: "#ffb454" },
+  { k: "dphi", lbl: "dφ",  dp: 0, color: "#46d6c4" },
   { k: "dpa",  lbl: "dφa", dp: 0, color: "#54d07f" },
   { k: "r",    lbl: "r",   dp: 2, color: "#ff625a" },
   { k: "Wg",   lbl: "Wg",  dp: 3, color: "#9ae8dd" },
   { k: "Vf",   lbl: "Vf",  dp: 2, color: "#f1c34c" },
 ];
 let sweepMetric = SWEEP_PRIMARY;   // which metric the table + charts show
-let sweepResult = null;            // { f, dphi_thr, r_thr, sep, rejected, saved } — FW pairing
+let sweepResult = null;            // { f, wa_thr, ratio, dphi_thr, r_thr, wa_ratio, rejected, saved }
 
 // Grouped grounds-then-airs (firm before loose) for the legend / table / traces.
 const sweepCaptured = () => SWEEP_SLOTS
@@ -1586,13 +1600,17 @@ function captureSweepLine(text) {
     updateSweepPicker(); refreshSweep();
     return;
   }
-  // "paired …" / "saved …" — the FW auto-cal's pairing result (saved threshold).
+  // "paired …" / "saved …" — the FW auto-cal's pairing result (rev 2: the gate is
+  // wa_thr (g/V) + ratio (ground/air Wa); dphi_thr/r_thr are diagnostics; sep gone).
   if (/^paired\b/i.test(body)) {
     sweepResult = {
       f:        num(/\bf=([-\d.]+)/),
+      wa_thr:   num(/\bwa_thr=([-\d.]+)/),
+      ratio:    num(/\bratio=([-\d.]+)/),
+      wa_ratio: num(/\bwa_ratio=([-\d.]+)/),       // reject case
+      wa_min:   num(/\(<\s*([-\d.]+)\s*\)/),        // reject min, e.g. "(<2.0)"
       dphi_thr: num(/\bdphi_thr=([-\d.]+)/),
       r_thr:    num(/\br_thr=([-\d.]+)/),
-      sep:      num(/\bsep=([-\d.]+)/),
       rejected: /unchanged/i.test(body) || num(/\bground=(\d+)/) === null,
       saved:    false,
     };
@@ -1603,9 +1621,11 @@ function captureSweepLine(text) {
     sweepResult = sweepResult || {};
     const keep = (v, prev) => (v === null ? prev : v);
     sweepResult.f        = keep(num(/\bf=([-\d.]+)/),        sweepResult.f);
+    sweepResult.wa_thr   = keep(num(/\bwa_thr=([-\d.]+)/),   sweepResult.wa_thr);
+    sweepResult.ratio    = keep(num(/\bratio=([-\d.]+)/),    sweepResult.ratio);
     sweepResult.dphi_thr = keep(num(/\bdphi_thr=([-\d.]+)/), sweepResult.dphi_thr);
     sweepResult.r_thr    = keep(num(/\br_thr=([-\d.]+)/),    sweepResult.r_thr);
-    sweepResult.sep      = keep(num(/\bsep=([-\d.]+)/),      sweepResult.sep);
+    sweepResult.rejected = false;
     sweepResult.saved    = true;
     hideSweepStale();
     refreshSweep();
@@ -1669,9 +1689,15 @@ function renderSweepTable() {
   }
   let cap = `${caps.length}/4 captured (${caps.map(c => c.slot.key).join(",")})`;
   if (sweepResult) {
-    if (sweepResult.rejected) cap += ` · rejected (sep ${fmt(sweepResult.sep, 0)} < 45)`;
-    else if (sweepResult.f != null) cap += ` · ${sweepResult.saved ? "saved" : "applied"} @ ${sweepResult.f}Hz `
-      + `dφ_thr=${fmt(sweepResult.dphi_thr, 0)} r_thr=${fmt(sweepResult.r_thr, 2)} sep=${fmt(sweepResult.sep, 0)}`;
+    if (sweepResult.rejected) {
+      cap += ` · rejected (wa ratio ${fmt(sweepResult.wa_ratio, 2)}`
+           + (sweepResult.wa_min != null ? ` < ${fmt(sweepResult.wa_min, 2)}` : "")
+           + ` — same condition twice?)`;
+    } else if (sweepResult.f != null) {
+      cap += ` · ${sweepResult.saved ? "saved" : "applied"} @ ${sweepResult.f}Hz `
+           + `wa_thr=${fmt(sweepResult.wa_thr, 3)} ratio=${fmt(sweepResult.ratio, 1)}×`
+           + ` (dφ_thr=${fmt(sweepResult.dphi_thr, 0)})`;
+    }
   }
   tbl.innerHTML = `<caption>${M.lbl} per condition · ${cap}</caption><thead>${head}</thead><tbody>${rows}</tbody>`;
   tbl.hidden = false;
@@ -2009,6 +2035,9 @@ class BleTransport {
         // entry) lines — pull it into the confidence chip wherever it appears.
         const cohM = text && text.match(/\bcoh=([\d.]+)/);
         if (cohM) setCoh(parseFloat(cohM[1]));
+        // wa=<g/V>(><thr>) on [SYS]/[ATT]: comparator '>' = above gate = on ground.
+        const waM = text && text.match(/\bwa=([\d.]+)\s*\(\s*([<>])\s*([\d.]+)\s*\??\)/);
+        if (waM) setContact(parseFloat(waM[1]), waM[2] === ">");
         // [SYS] <mode> <loop>/<main> soc=… armed=… dphi=… coh=… ld=…  (~every 3 s).
         // Pull the loop/main rate into the speedometer silently (would otherwise
         // spam the console). e.g. "[SYS] BAL 9.0k/.. soc=64% …" → "9.0k Hz".
@@ -2340,6 +2369,7 @@ function setStatus(ok, name) {
     updateModePill(-1);   // → "— mode", neutral class
     onBatterySoc(-1);     // → unknown/USB glyph, no stale charge level
     setCoh(null);         // → "coh —", neutral (no stale confidence reading)
+    setContact(null);     // → "wa —", neutral (no stale ground-contact reading)
     hideSweepStale();     // clear any probe-cal-stale nudge from a prior link
     // Neutralize the balance visual so it doesn't hold the last pose.
     if (typeof balanceLive !== "undefined") {
