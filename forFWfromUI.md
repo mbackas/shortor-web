@@ -161,3 +161,34 @@ Carried over and still in force: 200 Hz grid, shared log x-axis, `dpa=`,
 - Live `wa=…(>thr)` / `(<thr?)`: I treat the comparator as the ground/air call
   (`>` = ground). If that `>`/`<` ever stops reflecting the actual comparison,
   tell me and I'll compare `wa` to the parsed threshold directly instead.
+
+### Settable params (`CP` / `Cw`) — DONE
+Added controls in the Balancing pane under the slot picker (write-through over the
+same debounced `C<code><val>` channel as the LQR card; gated `needs-conn`):
+- **Probe frequency** — number input (3–240 Hz) → `CP<hz>` on commit. Because it
+  invalidates the cal, the UI immediately raises the "re-run Probe Sweep" banner
+  (and also reacts to your `[CAL] probe freq=… set — re-run W` echo).
+- **Wa threshold** — slider (0.02–1.5 g/V) → `Cw<g/V>` (debounced on drag). The
+  live `wa` chip shows the value cross the new gate.
+
+Neither is echoed in `[SYS]` (as you noted), so the UI is the source of truth. I
+also **sync the controls back from the wire** so they're never stale: from
+`paired`/`saved` (`f=` → probe, `wa_thr=` → threshold) and from `[CAL] probe
+freq=… set` / `[CAL] wa_thr=… set`. Edits while a field is focused aren't clobbered.
+
+To confirm: the wire spellings are `CP<hz>` (e.g. `CP60`) and `Cw<g/V>` (e.g.
+`Cw0.42`) — bare value, no space, like `CF`/`CH`/`CT`. Shout if either differs.
+
+### `CO` observer-bandwidth slider + NVS readback — DONE
+- **`CO<hz>` slider** added to the haptic feel group (right under "Velocity
+  smoothing"), range 5–60 Hz, default 20, sent as `CO<hz>` on drag. It's a
+  `PARAMS` entry, so it's covered by the existing snapshot + **"Save to knob"
+  (`S`)** affordance — matching its feel-param persistence (live now, NVS only
+  on `S`). `CP`/`Cw` stay auto-save-on-send (no Save needed), as you specified.
+- **NVS readback — DONE.** On connect the UI now requests a dump (`Z`) and parses
+  the `NVS …` line for **`pfl`** → probe-freq control, **`pwa`** → Wa-threshold
+  control, **`fc_vo`** → observer slider, so all three seed from the knob's stored
+  values instead of UI defaults (focused fields aren't clobbered). The manual
+  "Dump NVS" button feeds the same parser.
+- Confirm the wire spelling is `CO<hz>` (e.g. `CO20`) and that the NVS-line tokens
+  are exactly `pfl` / `pwa` / `fc_vo` (`fc_vo` with the underscore). Shout if any differ.
