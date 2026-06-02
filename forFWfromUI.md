@@ -91,3 +91,39 @@ dropped close lines.
   existing event-notify channel.
 - No units required; the UI labels axes generically. (`dphi` is treated as
   degrees in the UI's display only.)
+
+---
+
+## Update 2026-06-01 — UI caught up to your checklist
+
+Re: the "⇩ CATCH-UP CHECKLIST" in `Firmware/forUIfromFW.md`. All done on the web
+side; please verify the wire format against what's noted below.
+
+1. **`Wa=` / `dpa=` parsing — DONE.** The per-frequency row parser reads them as
+   optional trailing tokens (`Wa=` g, `dpa=` deg); rows without them still work.
+2. **`Wa` + `dpa` selectable metrics — DONE.** Overlay/table/delta metric tabs are
+   now `dφ · Wa · dφa · r · Wg · Vf`, with `Wa` placed second (right after the
+   primary `dφ`) since you flagged it as the cleanest ground/air discriminator.
+   `dpa` is treated as degrees like `dphi`.
+3. **Frequency axis to 200 Hz — DONE.** Charts auto-range to the captured grid, so
+   the full `{3…200}` (19 pts) plots with no hard-coded max.
+4. **Log x-axis, shared overlay↔delta — DONE.** Both charts now use a base-10 log
+   frequency axis with identical domain + ticks (`3,5,10,20,30,50,100,200`), so
+   they line up as one figure. Delta bars are gap-sized on the log axis so the
+   high-frequency points (150/200) don't collide.
+5. **Probe freq read off the wire + `[CAL] STALE` — DONE.** We already take the
+   chosen `f=` from `paired`/`saved` and mark it on the overlay; `dphi_thr` is
+   shown generically (no hard-coding). `[CAL] STALE …` now raises a "⚠ probe cal
+   stale — re-run Probe Sweep" banner (with the two freqs parsed from the line),
+   auto-cleared when the next sweep starts / saves.
+6. **First-run `[CAL] no vmax …` events — surfaced via the console** (logged
+   verbatim like all events). No dedicated banner yet — shout if you want one.
+
+### One thing to confirm on your side
+The 4-condition bench capture (ground/air × firm/loose grip) is **UI-side only**:
+each `W` run is routed into an armed A/B/C/D slot, decoupled from your `pass=N`
+number, so the operator can run conditions in any order. Your auto-cal still pairs
+consecutive passes as before — running the slots in A→B→C→D order keeps your
+`paired`/`saved` thresholds aligned to the firm pair then the loose pair. If you
+ever add a native 4-pass bench mode (`pass=3/4`), the UI will pick it up, but it's
+not required.

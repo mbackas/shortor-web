@@ -695,7 +695,7 @@
     cursor: pointer;
     transition: color .12s, border-color .12s, background .12s;
   }
-  .sweep-slots button b     { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; line-height: 1; }
+  .sweep-slots button b     { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; line-height: 1; color: var(--cat-color, inherit); }
   .sweep-slots button small { font-size: 9px; letter-spacing: 0.02em; opacity: 0.85; line-height: 1; }
   .sweep-slots button:hover { color: var(--fg); border-color: var(--amber-dim); }
   .sweep-slots button.armed {
@@ -708,6 +708,17 @@
     margin-left: 4px; color: var(--slot-color, var(--ok));
   }
   .sweep-clear { margin-left: auto; font-size: 10px; }
+  .sweep-stale {
+    margin-top: 8px;
+    padding: 6px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--warn);
+    background: rgba(241,195,76,0.08);
+    border: 1px solid rgba(241,195,76,0.42);
+    border-radius: var(--radius-sm);
+  }
+  .sweep-stale #sweepStaleDetail { color: var(--muted); }
   .sweep-chart-cap {
     font-family: var(--font-mono);
     font-size: 10px;
@@ -1204,10 +1215,13 @@
         <button type="button" data-slot="3"><b>D</b><small>air·loose</small></button>
         <button type="button" id="sweepClear" class="sweep-clear" title="Clear all captured passes">clear</button>
       </div>
+      <div id="sweepStale" class="sweep-stale" hidden>⚠ probe cal is stale — re-run Probe Sweep <span id="sweepStaleDetail"></span></div>
       <div class="sweep-wrap"><table id="sweepTable" class="sweep-table" hidden></table></div>
       <div id="sweepCharts" class="sweep-charts">
         <div class="sweep-tabs" id="sweepTabs" role="tablist">
           <button type="button" data-m="dphi" class="active">dφ</button>
+          <button type="button" data-m="Wa" title="Forward-accel / contact-force amplitude (g) — usually the cleanest ground/air discriminator">Wa</button>
+          <button type="button" data-m="dpa" title="Forward-accel-vs-wheel phase (deg)">dφa</button>
           <button type="button" data-m="r">r</button>
           <button type="button" data-m="Wg">Wg</button>
           <button type="button" data-m="Vf">Vf</button>
@@ -1296,7 +1310,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 26, date: "2026-06-01" };
+const APP_BUILD = { ver: 27, date: "2026-06-01" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1454,33 +1468,92 @@ function setCoh(v) {
 // Capture is decoupled from the FW's pass number: the armed slot decides where
 // a run lands, so the operator can run the conditions in any order. Lines still
 // echo to the console verbatim.
+// Colour groups the CATEGORY (ground = amber family, air = cyan family); grip is
+// the within-group distinction — firm = saturated + solid line, loose = pale +
+// dashed. So the two ground traces and the two air traces each read as a cluster.
+const GROUND_HUE = "#ffb454", AIR_HUE = "#46d6c4";
 const SWEEP_SLOTS = [
-  { key: "A", cond: "ground", grip: "firm",  label: "ground·firm",  color: "#ffb454" }, // amber
-  { key: "B", cond: "air",    grip: "firm",  label: "air·firm",     color: "#46d6c4" }, // cyan
-  { key: "C", cond: "ground", grip: "loose", label: "ground·loose", color: "#54d07f" }, // green
-  { key: "D", cond: "air",    grip: "loose", label: "air·loose",    color: "#ff625a" }, // red
+  { key: "A", cond: "ground", grip: "firm",  label: "ground·firm",  cat: GROUND_HUE, color: "#ffb454", dash: [] },
+  { key: "B", cond: "air",    grip: "firm",  label: "air·firm",     cat: AIR_HUE,    color: "#46d6c4", dash: [] },
+  { key: "C", cond: "ground", grip: "loose", label: "ground·loose", cat: GROUND_HUE, color: "#ffd9a0", dash: [6, 4] },
+  { key: "D", cond: "air",    grip: "loose", label: "air·loose",    cat: AIR_HUE,    color: "#9ae8dd", dash: [6, 4] },
 ];
+const SWEEP_CATS = ["ground", "air"];   // display grouping order
 const sweepRuns = [null, null, null, null];   // per-slot { rows:[{f,dphi,r,Vf,Wg}], done }
 let sweepArmed  = 0;               // slot index the next W run fills
 const SWEEP_PRIMARY = "dphi";      // the metric detection keys on
-// dphi = body-vs-wheel phase (deg, primary); r = inertia ratio (fallback);
-// Wg = gyro amplitude; Vf = wheel-velocity amplitude. Each gets a plot colour.
+// dphi = body-vs-wheel phase (deg, primary); Wa = forward-accel / contact-force
+// amplitude (g — often the cleanest ground/air discriminator); dpa = accel-vs-
+// wheel phase (deg); r = inertia ratio (fallback); Wg = gyro amp; Vf = wheel-vel amp.
 const SWEEP_METRICS = [
-  { k: "dphi", lbl: "dφ", dp: 0, color: "#ffb454" },
-  { k: "r",    lbl: "r",  dp: 2, color: "#46d6c4" },
-  { k: "Wg",   lbl: "Wg", dp: 3, color: "#54d07f" },
-  { k: "Vf",   lbl: "Vf", dp: 2, color: "#ff625a" },
+  { k: "dphi", lbl: "dφ",  dp: 0, color: "#ffb454" },
+  { k: "Wa",   lbl: "Wa",  dp: 3, color: "#46d6c4" },
+  { k: "dpa",  lbl: "dφa", dp: 0, color: "#54d07f" },
+  { k: "r",    lbl: "r",   dp: 2, color: "#ff625a" },
+  { k: "Wg",   lbl: "Wg",  dp: 3, color: "#9ae8dd" },
+  { k: "Vf",   lbl: "Vf",  dp: 2, color: "#f1c34c" },
 ];
 let sweepMetric = SWEEP_PRIMARY;   // which metric the table + charts show
 let sweepResult = null;            // { f, dphi_thr, r_thr, sep, rejected, saved } — FW pairing
 
+// Grouped grounds-then-airs (firm before loose) for the legend / table / traces.
 const sweepCaptured = () => SWEEP_SLOTS
   .map((s, i) => ({ slot: s, i, run: sweepRuns[i] }))
-  .filter(x => x.run && x.run.rows.length);
+  .filter(x => x.run && x.run.rows.length)
+  .sort((a, b) =>
+    (SWEEP_CATS.indexOf(a.slot.cond) - SWEEP_CATS.indexOf(b.slot.cond)) ||
+    (a.slot.grip < b.slot.grip ? -1 : a.slot.grip > b.slot.grip ? 1 : 0));
 const sweepRunByCG = (cond, grip) => {
   const i = SWEEP_SLOTS.findIndex(s => s.cond === cond && s.grip === grip);
   return i >= 0 ? sweepRuns[i] : null;
 };
+
+// "[CAL] STALE: thresholds cal'd at 5.0Hz but probe is 10.0Hz — re-run W"
+function showSweepStale(text) {
+  const el = document.getElementById("sweepStale");
+  if (!el) return;
+  const m = text.match(/at\s*([\d.]+)\s*Hz.*?probe is\s*([\d.]+)\s*Hz/i);
+  const d = document.getElementById("sweepStaleDetail");
+  if (d) d.textContent = m ? `(saved @ ${m[1]} Hz, probe now ${m[2]} Hz)` : "";
+  el.hidden = false;
+}
+function hideSweepStale() { const el = document.getElementById("sweepStale"); if (el) el.hidden = true; }
+
+// Shared log-frequency x-axis so the overlay and delta charts read as one
+// figure (same domain + ticks). Domain = min..max captured frequency.
+function sweepFreqExtent() {
+  const fs = sweepCaptured().flatMap(c => c.run.rows.map(x => x.f)).filter(v => v != null && v > 0);
+  if (!fs.length) return null;
+  let lo = Math.min(...fs), hi = Math.max(...fs);
+  if (lo === hi) { lo /= 1.5; hi *= 1.5; }   // pad a lone point
+  return [lo, hi];
+}
+function sweepXTicks(lo, hi) {
+  const nice = [3, 5, 10, 20, 30, 50, 100, 200, 300, 500];
+  const ticks = nice.filter(f => f >= lo * 0.999 && f <= hi * 1.001);
+  const r = v => +v.toFixed(v < 10 ? 1 : 0);
+  if (!ticks.length || ticks[0] > lo * 1.02) ticks.unshift(r(lo));
+  if (ticks[ticks.length - 1] < hi * 0.98) ticks.push(r(hi));
+  return [...new Set(ticks)];
+}
+// Faint vertical gridlines + labels at the log ticks; returns the X(f) mapper.
+function sweepLogAxis(ctx, dpr, pad, w, h, lo, hi) {
+  const lL = Math.log10(lo), lH = Math.log10(hi);
+  const X = f => pad.l + (lH === lL ? 0.5 : (Math.log10(f) - lL) / (lH - lL)) * (w - pad.l - pad.r);
+  ctx.fillStyle = "#7f908d";
+  ctx.font = `${10 * dpr}px 'IBM Plex Mono', monospace`;
+  for (const f of sweepXTicks(lo, hi)) {
+    const x = X(f);
+    ctx.strokeStyle = "#18242a"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
+    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillText(String(f), x, h - pad.b + 4 * dpr);
+  }
+  ctx.textAlign = "right"; ctx.textBaseline = "bottom";
+  ctx.fillText("Hz", w - pad.r, h - 1 * dpr);
+  return X;
+}
 
 function updateSweepPicker() {
   const wrap = document.getElementById("sweepSlots");
@@ -1490,6 +1563,7 @@ function updateSweepPicker() {
     btn.classList.toggle("armed", i === sweepArmed);
     btn.classList.toggle("filled", !!(sweepRuns[i] && sweepRuns[i].rows.length));
     btn.style.setProperty("--slot-color", SWEEP_SLOTS[i].color);
+    btn.style.setProperty("--cat-color", SWEEP_SLOTS[i].cat);
   }
 }
 
@@ -1497,9 +1571,11 @@ function captureSweepLine(text) {
   const body = text.replace(/^\[SWP\]\s*/i, "");
   const num = (re) => { const m = body.match(re); return m ? parseFloat(m[1]) : null; };
 
-  // "pass=N begin" — (re)start capturing into the armed slot.
+  // "pass=N begin" — (re)start capturing into the armed slot. A fresh sweep
+  // also clears any stale-cal warning (running W is what fixes it).
   if (/^pass=\d+\s+begin/i.test(body)) {
     sweepRuns[sweepArmed] = { rows: [], done: false };
+    hideSweepStale();
     updateSweepPicker(); refreshSweep();
     return;
   }
@@ -1531,6 +1607,7 @@ function captureSweepLine(text) {
     sweepResult.r_thr    = keep(num(/\br_thr=([-\d.]+)/),    sweepResult.r_thr);
     sweepResult.sep      = keep(num(/\bsep=([-\d.]+)/),      sweepResult.sep);
     sweepResult.saved    = true;
+    hideSweepStale();
     refreshSweep();
     return;
   }
@@ -1542,7 +1619,13 @@ function captureSweepLine(text) {
   const dphi = num(/\bdphi=([-\d.]+)/), r = num(/\br=([-\d.]+)/);
   if (f === null || (dphi === null && r === null)) return;
   if (!sweepRuns[sweepArmed]) sweepRuns[sweepArmed] = { rows: [], done: false };
-  sweepRuns[sweepArmed].rows.push({ f, dphi, r, Vf: num(/\bVf=([-\d.]+)/), Wg: num(/\bWg=([-\d.]+)/) });
+  sweepRuns[sweepArmed].rows.push({
+    f, dphi, r,
+    Vf:  num(/\bVf=([-\d.]+)/),
+    Wg:  num(/\bWg=([-\d.]+)/),
+    Wa:  num(/\bWa=([-\d.]+)/),
+    dpa: num(/\bdpa=([-\d.]+)/),
+  });
   updateSweepPicker(); refreshSweep();
 }
 
@@ -1630,14 +1713,19 @@ function drawSweepOverlay() {
     return;
   }
   if (legend) {
-    let html = caps.map(c => `<span><i style="background:${c.slot.color}"></i>${c.slot.label}</span>`).join("");
+    let html = caps.map(c => {
+      const sw = (c.slot.dash && c.slot.dash.length)
+        ? `background:repeating-linear-gradient(90deg, ${c.slot.color} 0 3px, transparent 3px 6px)`
+        : `background:${c.slot.color}`;
+      return `<span><i style="${sw}"></i>${c.slot.label}</span>`;
+    }).join("");
     if (sweepResult && sweepResult.f != null && !sweepResult.rejected)
       html += `<span><i style="background:#e2ece9;height:9px;width:2px"></i>probe ${sweepResult.f}Hz</span>`;
     legend.innerHTML = html;
   }
-  const allF = caps.flatMap(c => c.run.rows.map(x => x.f)).filter(v => v !== null);
-  let fmin = Math.min(...allF), fmax = Math.max(...allF);
-  if (fmin === fmax) { fmin -= 1; fmax += 1; }
+  const ext = sweepFreqExtent();
+  if (!ext) { sweepEmpty(ctx, w, h, dpr, `no ${M.lbl} data`); return; }
+  const [fmin, fmax] = ext;
   const vals = caps.flatMap(c => c.run.rows.map(x => x[M.k])).filter(v => v != null && !Number.isNaN(v));
   if (!vals.length) { sweepEmpty(ctx, w, h, dpr, `no ${M.lbl} data`); return; }
   let vmin = Math.min(...vals), vmax = Math.max(...vals);
@@ -1645,11 +1733,11 @@ function drawSweepOverlay() {
   const vp = (vmax - vmin) * 0.14; vmin -= vp; vmax += vp;
 
   const pad = { l: 40 * dpr, r: 10 * dpr, t: 14 * dpr, b: 22 * dpr };
-  const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
-  const X = f => pad.l + ((f - fmin) / (fmax - fmin)) * pw;
+  const ph = h - pad.t - pad.b;
   const Y = v => pad.t + (1 - (v - vmin) / (vmax - vmin)) * ph;
-  const freqs = [...new Set(allF)].sort((a, b) => a - b);
+  const freqs = [...new Set(caps.flatMap(c => c.run.rows.map(x => x.f)).filter(v => v != null))].sort((a, b) => a - b);
 
+  // Y grid + labels first, then the shared log x-axis (gridlines + Hz labels).
   ctx.fillStyle = "#7f908d";
   for (let i = 0; i <= 4; i++) {
     const v = vmin + (i / 4) * (vmax - vmin), y = Y(v);
@@ -1659,10 +1747,7 @@ function drawSweepOverlay() {
     ctx.textAlign = "right"; ctx.textBaseline = "middle";
     ctx.fillText(v.toFixed(M.dp), pad.l - 5 * dpr, y);
   }
-  ctx.textAlign = "center"; ctx.textBaseline = "top";
-  for (const f of freqs) ctx.fillText(String(f), X(f), h - pad.b + 4 * dpr);
-  ctx.textAlign = "right"; ctx.textBaseline = "bottom";
-  ctx.fillText("Hz", w - pad.r, h - 1 * dpr);
+  const X = sweepLogAxis(ctx, dpr, pad, w, h, fmin, fmax);
 
   for (const c of caps) {
     const pts = freqs.map(f => {
@@ -1671,7 +1756,9 @@ function drawSweepOverlay() {
     }).filter(Boolean);
     if (!pts.length) continue;
     ctx.strokeStyle = c.slot.color; ctx.lineWidth = 2 * dpr;
+    ctx.setLineDash((c.slot.dash || []).map(d => d * dpr));   // firm solid, loose dashed
     ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke();
+    ctx.setLineDash([]);
     ctx.fillStyle = c.slot.color;
     for (const p of pts) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.6 * dpr, 0, 2 * Math.PI); ctx.fill(); }
   }
@@ -1719,12 +1806,16 @@ function drawSweepDelta() {
   const freqs = [...new Set(series.flatMap(s => s.data.map(d => d.f)))].sort((a, b) => a - b);
   const flat = series.flatMap(s => s.data.map(d => d.v));
   const amax = Math.max(1e-6, ...flat.map(Math.abs)) * 1.18;
+  // x domain = full captured extent (matches the overlay's axis exactly)
+  const ext = sweepFreqExtent() || [Math.min(...freqs), Math.max(...freqs)];
+  const [fmin, fmax] = ext;
 
   const pad = { l: 40 * dpr, r: 10 * dpr, t: 10 * dpr, b: 22 * dpr };
-  const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
+  const ph = h - pad.t - pad.b;
   const Y = v => pad.t + (1 - (v + amax) / (2 * amax)) * ph;
   const y0 = Y(0);
 
+  // Y grid + labels, then the shared log x-axis (same ticks/range as overlay)
   ctx.fillStyle = "#7f908d";
   for (const v of [amax, amax / 2, 0, -amax / 2, -amax]) {
     const y = Y(v);
@@ -1735,24 +1826,27 @@ function drawSweepDelta() {
     ctx.textAlign = "right"; ctx.textBaseline = "middle";
     ctx.fillText((v >= 0 ? "+" : "") + v.toFixed(M.dp), pad.l - 5 * dpr, y);
   }
+  const X = sweepLogAxis(ctx, dpr, pad, w, h, fmin, fmax);
 
-  const groupW = pw / freqs.length;
+  // Bar cluster width from the tightest adjacent log-spacing so bars never overlap.
+  const xs = freqs.map(X).sort((a, b) => a - b);
+  let minGap = Infinity;
+  for (let i = 1; i < xs.length; i++) minGap = Math.min(minGap, xs[i] - xs[i - 1]);
+  if (!isFinite(minGap)) minGap = (w - pad.l - pad.r) * 0.12;
   const nS = series.length;
-  const barW = Math.min(13 * dpr, (groupW * 0.7) / nS);
-  freqs.forEach((f, gi) => {
-    const gx = pad.l + groupW * gi + groupW / 2;
-    const span = barW * nS;
+  const cluster = Math.min(16 * dpr, minGap * 0.72);
+  const barW = Math.max(1.5 * dpr, cluster / nS);
+  for (const f of freqs) {
+    const cx = X(f), span = barW * nS;
     series.forEach((s, si) => {
       const d = s.data.find(x => x.f === f);
       if (!d) return;
-      const bx = gx - span / 2 + barW * si;
+      const bx = cx - span / 2 + barW * si;
       const by = Y(Math.max(Math.min(d.v, amax), -amax));
       ctx.fillStyle = s.color;
       ctx.fillRect(bx, Math.min(by, y0), Math.max(1, barW - 1 * dpr), Math.abs(by - y0) || 1);
     });
-    ctx.fillStyle = "#7f908d"; ctx.textAlign = "center"; ctx.textBaseline = "top";
-    ctx.fillText(String(f), gx, h - pad.b + 4 * dpr);
-  });
+  }
   ctx.strokeStyle = "#33474d"; ctx.lineWidth = 1.5 * dpr;
   ctx.beginPath(); ctx.moveTo(pad.l, y0); ctx.lineTo(w - pad.r, y0); ctx.stroke();
 }
@@ -1929,6 +2023,11 @@ class BleTransport {
         // visible, and still echo to the console so the raw lines aren't lost.
         if (text && /^\[SWP\]/i.test(text)) {
           captureSweepLine(text);
+        }
+        // [CAL] STALE: stored probe thresholds no longer match the live probe
+        // tone → nudge the operator to re-run the sweep.
+        if (text && /^\[CAL\]\s+STALE/i.test(text)) {
+          showSweepStale(text);
         }
         log("← " + (text || "(empty event)"));
       });
@@ -2241,6 +2340,7 @@ function setStatus(ok, name) {
     updateModePill(-1);   // → "— mode", neutral class
     onBatterySoc(-1);     // → unknown/USB glyph, no stale charge level
     setCoh(null);         // → "coh —", neutral (no stale confidence reading)
+    hideSweepStale();     // clear any probe-cal-stale nudge from a prior link
     // Neutralize the balance visual so it doesn't hold the last pose.
     if (typeof balanceLive !== "undefined") {
       balanceLive.tilt = 0; balanceLive.posErrSat = 0; balanceLive.mode = 0; balanceLive.shaftAngle = 0;
