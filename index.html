@@ -1266,6 +1266,23 @@
     </div>
   </details>
 
+  <!-- Self-describing live-tunable registry (Cu / [TUN]) -->
+  <details class="card" id="secTune">
+    <summary>Tuning <span class="sub">live registry</span></summary>
+    <div class="body">
+      <p class="help">
+        Detector &amp; feel tunables read live from the knob (the <code>Cu</code>
+        registry). Each control sends its value immediately; click
+        <b>Save to knob</b> in Tune to persist. New firmware params appear here
+        automatically.
+      </p>
+      <div id="tunRegistry"></div>
+      <div class="row" style="margin-top: 8px;">
+        <span id="tunHint" class="stat" style="font-size: 11px;">Connect — the knob's tunables populate on the NVS read.</span>
+      </div>
+    </div>
+  </details>
+
   <!-- Live instrumentation + dev tools -->
   <details class="card" id="secDiag">
     <summary>Diagnostics <span class="sub">live data &amp; console</span></summary>
@@ -1350,7 +1367,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 31, date: "2026-06-02" };
+const APP_BUILD = { ver: 32, date: "2026-06-03" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1996,7 +2013,7 @@ class BleTransport {
     } else {
       if (!("bluetooth" in navigator)) throw new Error("Web Bluetooth not supported");
       this.device = await navigator.bluetooth.requestDevice({
-        filters: [{ name: "Shortor Knob V3" }],
+        filters: [{ namePrefix: "Shortor" }],
         optionalServices: [SVC_UUID],
       });
     }
@@ -2039,9 +2056,12 @@ class BleTransport {
         //   [16..19] tilt_dot (rad/s)
         //   [20..23] mode (0=haptic, 1=balance) as float
         const dv = ev.target.value;
-        const angle = dv.getFloat32(0, true);
-        onLiveAngle(angle);
+        const angle = dv.getFloat32(0, true);   // [0] balance-compensated (cart/balance visual)
         balanceLive.shaftAngle = angle;
+        // [13] @52 = RAW shaft_angle (clean knob spin that drives the HID scroll)
+        // → the scroll-practice ring. [0] is offset by tilt/balance so it isn't
+        // the true spin; fall back to it on older 52-byte packets.
+        onLiveAngle(dv.byteLength >= 56 ? dv.getFloat32(52, true) : angle);
         if (dv.byteLength >= 12) {
           const vbus   = dv.getFloat32(4, true);
           const torque = dv.getFloat32(8, true);
@@ -2096,6 +2116,9 @@ class BleTransport {
       await this.event.startNotifications();
       this.event.addEventListener("characteristicvaluechanged", (ev) => {
         const text = new TextDecoder().decode(ev.target.value);
+        // [HB] — 2 Hz idle keepalive. Pure no-op: reset the link-alive watchdog
+        // and don't echo to the console (it would spam during quiet periods).
+        if (text && text.startsWith("[HB]")) { petTelemetry(); return; }
         // Lift-detector coherence rides along on [SYS] (~3 s) and [ATT] (blocked
         // entry) lines — pull it into the confidence chip wherever it appears.
         const cohM = text && text.match(/\bcoh=([\d.]+)/);
@@ -2122,6 +2145,11 @@ class BleTransport {
         // threshold, observer bandwidth) from the knob's stored values.
         if (text && /^NVS\b/i.test(text)) {
           applyNvsLine(text);
+        }
+        // [TUN] — self-describing live-tunable registry (full dump from Z, or a
+        // single "name=value set" echo). Builds/updates the Tuning panel.
+        if (text && /^\[TUN\]/i.test(text)) {
+          applyTunLine(text);
         }
         // [CAL] events: STALE / "probe freq=… set — re-run W" nudge the operator
         // to re-run the sweep; probe-freq / wa_thr echoes sync the param controls.
@@ -2506,7 +2534,31 @@ async function connectFlow() {
   transport = (kind === "ble") ? new BleTransport() : new SerialTransport();
   try {
     log(`Connecting via ${kind}...`);
-    const name = await transport.connect();
+    let name;
+    if (kind === "ble") {
+      // getDevices()-first (REQUIRED for macOS): when the Mac is paired to the
+      // knob as a HID mouse it owns the connection, and an already-connected
+      // peripheral never shows up in requestDevice()'s scan chooser. getDevices()
+      // returns devices this origin already granted — including OS-connected ones
+      // — so we reconnect with no chooser. Also the better path on Windows
+      // (silent, no dialog). The chooser is only for the first-ever grant.
+      let known = null;
+      if (navigator.bluetooth && typeof navigator.bluetooth.getDevices === "function") {
+        try {
+          const list = await navigator.bluetooth.getDevices();
+          known = list.find(d => d.name && d.name.startsWith("Shortor")) || null;
+        } catch (e) { /* fall through to the chooser */ }
+      }
+      if (known) {
+        log(`Reconnecting to ${known.name} (no chooser)…`);
+        name = await transport.connect(known);
+      } else {
+        log("First connect — opening the device chooser. On a Mac do this right after powering the knob on (before it pairs as a mouse), or Forget it in Bluetooth settings first; after one grant it reconnects silently.", "warn");
+        name = await transport.connect();   // requestDevice() — needs this user gesture
+      }
+    } else {
+      name = await transport.connect();
+    }
     setStatus(true, name);
     log("Connected.", "ok");
     // Pull the live params off the knob so the sliders mirror reality
@@ -3177,6 +3229,54 @@ function applyNvsLine(text) {
   const fvo = num(/\bfc_vo=([-\d.]+)/); if (fvo != null) syncObsBw(fvo);
 }
 
+// ─── Live-tunable registry (Cu / [TUN]) ──────────────────────────────────────
+// Self-describing: the firmware names+values come off the wire, so the panel
+// builds itself and new params need no UI change. Friendly labels for the known
+// set (raw name still shown as a tooltip); unknown names render under their key.
+const TUN_LABELS = {
+  rthr: "free-spin r gate", tfs: "r sustain (ms)", fsvm: "vel gate ×vmax",
+  fsvt: "vel sustain (ms)", coh: "probe coherence gate", ptone: "probe amp (V)",
+  sbkl: "scroll backlash (notches)", smax: "scroll cap (notches/frame)",
+  usbhap: "haptic on USB — 1=on (bench)",
+};
+const tunState = {};   // name → value (UI-authoritative; write-through)
+const tunEls   = {};   // name → <input>
+function setTunParam(name, val) {
+  if (Number.isNaN(val)) return;
+  tunState[name] = val;
+  let el = tunEls[name];
+  if (!el) {
+    const wrap = document.getElementById("tunRegistry");
+    if (!wrap) return;
+    const row = document.createElement("div"); row.className = "slider-row";
+    const lbl = document.createElement("label");
+    lbl.textContent = TUN_LABELS[name] || name;
+    lbl.title = name;
+    const span = document.createElement("span"); span.className = "value";
+    el = document.createElement("input");
+    el.type = "number"; el.step = "any"; el.id = `tun_${name}`;
+    el.style.width = "7ch"; el.style.textAlign = "right";
+    span.appendChild(el);
+    row.appendChild(lbl); row.appendChild(span);
+    wrap.appendChild(row);
+    tunEls[name] = el;
+    el.addEventListener("change", () => {
+      const v = parseFloat(el.value);
+      if (!isFinite(v)) { el.value = tunState[name]; return; }
+      tunState[name] = v;
+      pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };   // → "Cu name=v"
+    });
+    const hint = document.getElementById("tunHint");
+    if (hint) hint.textContent = "Changes apply live; Save to knob (Tune) to persist.";
+  }
+  if (document.activeElement !== el) el.value = val;
+}
+// "[TUN] rthr=0.65 tfs=150.0 …"  (full dump from Z)  OR  "[TUN] rthr=0.7 set" (echo)
+function applyTunLine(text) {
+  const body = text.replace(/^\[TUN\]\s*/i, "");
+  for (const m of body.matchAll(/([A-Za-z_]\w*)=(-?[\d.]+)/g)) setTunParam(m[1], parseFloat(m[2]));
+}
+
 // Slider send pump: coalesces drag values and serializes writes so
 // dropped packets don't snowball into a flood of parallel timeouts.
 // Pending entries are either a raw float (haptic params, keyed by
@@ -3198,6 +3298,9 @@ setInterval(async () => {
         // shaft_rad = mm / WHEEL_RADIUS_MM. Sign-flipped to match the
         // physical-forward convention (firmware shaft sign is opposite).
         line = `Cx${-val.val / WHEEL_RADIUS_MM}\n`;
+      } else if (val && typeof val === "object" && val.kind === "Cu") {
+        // Live-tunable registry entry — `Cu <name>=<value>`.
+        line = `Cu ${val.name}=${val.val}\n`;
       } else if (val && typeof val === "object" && val.kind === "C") {
         // Plain-coded LQR-card param (LPF cutoffs).
         line = `C${val.code}${val.val}\n`;

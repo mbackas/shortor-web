@@ -214,3 +214,50 @@ Implemented the `NS`/`NP`/`NX` + `shortor.local` flow:
 Confirm the spellings: `NS<ssid>` / `NP<password>` / `NX`, the OTA path is
 `http://shortor.local/firmware` (+ `/ota-prep` for readiness), and the `[WIFI]`
 echo strings contain `ssid set` / `pass set` / `creds cleared`. Shout if any differ.
+---
+
+## Update 2026-06-02 — synced to the consolidated wire contract
+
+Worked through your rewritten `forUIfromFW.md`. New/changed items now done UI-side:
+
+- **`[TUN]` / `Cu` self-describing registry — DONE.** New "Tuning" pane builds
+  itself from the `[TUN]` dump (parsed on the `Z` read): one number input per
+  `name=value`, friendly labels for the known set (`rthr`/`tfs`/`fsvm`/`fsvt`/
+  `coh`/`ptone`/`sbkl`/`smax`), and **unknown names render under their raw key**
+  so future params need no UI change. Edits send live; the existing Save-to-knob
+  (`S`) persists. **Confirm the wire format:** I send `Cu <name>=<value>` *with a
+  space* (matching your example `Cu rthr=0.7`) — flag if it should be `Cu<name>=…`.
+- **Telemetry packet 56 bytes — DONE.** Dispatch now reads `[13]@52` as the RAW
+  `shaft_angle` and feeds *that* to the scroll-practice ring (falls back to `[0]`
+  on older 52-byte packets). `[0]` still drives the balance/cart visual.
+- **`[HB]` keepalive — DONE.** Treated as a no-op: it pets the 1 s link-alive
+  watchdog and is **not** logged (so quiet periods don't spam the console or
+  trip a false "disconnected").
+- NVS tokens: `pfl`/`pwa`/`fc_vo` already seed probe-freq/Wa-thr/CO. `fc_v` (CF)
+  is seeded via the params readback already; `fc_vh` (CH) is intentionally
+  ignored — the haptic velocity-smoothing slider was removed.
+
+**One mismatch to confirm — `CO`.** Your contract lists `CO` as default **80 Hz,
+~20–300**. Per an explicit request the UI slider is currently **log-scaled 5–500,
+def 20** (and relabeled "Velocity LPF (Hz)"). The range is a superset of yours and
+the real value is seeded from NVS `fc_vo` on connect, so it's functional — but say
+the word if you want the UI bounds/default tightened to 20–300 / 80.
+
+---
+
+## Update 2026-06-03 — macOS getDevices()-first connect + usbhap
+
+- **`getDevices()`-first connect — DONE (§5).** The Connect button now tries
+  `navigator.bluetooth.getDevices()` first, matches a `Shortor`-prefixed device,
+  and connects with **no chooser** — so it works on macOS while the OS holds the
+  HID-mouse link (the device is invisible to the `requestDevice()` scan there) and
+  is silent on Windows too. The chooser (`requestDevice`, `namePrefix:"Shortor"`)
+  is the fallback for the first-ever grant only, and on that path we log the Mac
+  hint ("connect right after power-on before it pairs as a mouse, or Forget it
+  first"). Falls back gracefully if `getDevices` is undefined. (Load-time
+  auto-reconnect already used `getDevices()`.)
+- **`usbhap` tunable — DONE.** Appears automatically in the self-describing Tuning
+  panel; added a friendly label ("haptic on USB — 1=on (bench)"). It's a 0/1 flag
+  rendered as a number input — say if you'd prefer a checkbox for boolean tunables.
+
+Nothing firmware-side needed for either (you noted §5 is a platform issue).
