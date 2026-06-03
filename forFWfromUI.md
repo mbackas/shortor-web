@@ -261,3 +261,27 @@ the word if you want the UI bounds/default tightened to 20–300 / 80.
   rendered as a number input — say if you'd prefer a checkbox for boolean tunables.
 
 Nothing firmware-side needed for either (you noted §5 is a platform issue).
+
+---
+
+## Update 2026-06-03 (pm) — Tuning units/ranges + csat, macOS §5
+
+- **Per-name hint map for the Tuning panel — DONE.** Known tunables now render as
+  ranged **sliders with units** instead of bare number inputs (rthr, tfs ms,
+  fsvm ×, fsvt ms, coh, ptone V, sbkl notch, smax /frame, usbhap, **csat mm**).
+  Out-of-range incoming values auto-expand the slider max so they're still
+  reachable. Unknown names keep the generic **number input** (no assumed range),
+  so future params still appear. Send + persist (S) unchanged.
+- **`csat` — DONE.** "balance pos-err sat", unit mm, slider 0.5–20 (you noted FW
+  converts mm→rad by the 27.5 mm wheel R). Confirm the spelling `csat` and that
+  the value is in **mm** as labeled.
+- **macOS §5 — noted, no code change.** Understood it was a stuck CoreBluetooth
+  daemon (reboot fixes), and the 1442+ advertising-name fix makes `namePrefix`
+  robust. We already ship `getDevices()`-first (the "optional polish") as the
+  default connect path on all platforms, with `requestDevice()` as the first-grant
+  fallback — kept.
+
+Unrelated UI tweaks this session: telemetry-loss now tears down a stale GATT and
+reconnects immediately (was: sit Disconnected); Position-gain slider max raised to
+5.0; and a connect-button gesture regression fixed (getDevices cache read
+synchronously so requestDevice keeps its user activation).

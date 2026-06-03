@@ -1367,7 +1367,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 32, date: "2026-06-03" };
+const APP_BUILD = { ver: 33, date: "2026-06-03" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1401,7 +1401,7 @@ const PARAMS = [
 // commands; setpoint uses `Cx<f>`.
 const LQR_PARAMS = [
   // All sliders give 25 detents from min→max (step = range/25).
-  { key: "k_x",     idx: 0, label: "Position gain",   min: 0, max: 1.0,  step: 0.04,    def: 0, fmt: v => v.toFixed(3) },
+  { key: "k_x",     idx: 0, label: "Position gain",   min: 0, max: 5.0,  step: 0.05,    def: 0, fmt: v => v.toFixed(3) },
   { key: "k_xv",    idx: 1, label: "Velocity gain",   min: 0, max: 0.1, step: 0.004,  def: 0, fmt: v => v.toFixed(4) },
   { key: "k_th",    idx: 2, label: "Tilt gain",       min: 0, max: 9.0,  step: 0.36,    def: 0, fmt: v => v.toFixed(3) },
   { key: "k_thd",   idx: 3, label: "Tilt-rate gain",  min: 0, max: 0.30, step: 0.012,   def: 0, fmt: v => v.toFixed(4) },
@@ -2490,12 +2490,12 @@ function setStatus(ok, name) {
 }
 
 // ─── Telemetry watchdog ─────────────────────────────────────────────────────
-// A live link must keep streaming telemetry (~30 Hz). If a full second
-// passes with no packet while the transport still claims to be connected,
-// treat the knob as gone and flip the UI to Disconnected. The next packet
-// (if it returns) auto-restores the Connected state. A genuine GATT/serial
-// drop is handled by onDisconnect() instead — guarded here via isConnected()
-// so this never clobbers the "Reconnecting…" state.
+// A live link must keep streaming telemetry (~30 Hz). If a full second passes
+// with no packet while the transport still claims to be connected, the GATT
+// session is stale (stream dead but no disconnect event) — so we tear it down
+// and immediately kick off the reconnect loop rather than sit Disconnected.
+// A genuine GATT/serial drop is handled by onDisconnect() instead — guarded
+// here via isConnected() so this never clobbers the "Reconnecting…" state.
 const TELEM_TIMEOUT_MS = 1000;
 let _telemWatchdog = 0;
 let _connectedName  = "";
@@ -2510,8 +2510,15 @@ function onTelemetryTimeout() {
   if (flashInFlight) return;
   if (!transport || !transport.isConnected()) return;  // real drop → onDisconnect owns it
   if (!document.body.classList.contains("connected")) return;
-  log("No telemetry for 1 s — marking disconnected.", "bad");
-  setStatus(false);                                    // restores on the next packet
+  log("No telemetry for 1 s — link stalled, reconnecting…", "warn");
+  setStatus(false);                                    // also clears this watchdog
+  // GATT still claims to be connected but the stream is dead. Tear it down so
+  // the gattserverdisconnected path immediately starts the reconnect loop
+  // (instead of sitting Disconnected waiting for a packet that won't come).
+  if (transport instanceof BleTransport && transport.device
+      && transport.device.gatt && transport.device.gatt.connected) {
+    try { transport.device.gatt.disconnect(); } catch (e) { /* listener handles it */ }
+  }
 }
 // Call on every telemetry packet to keep the link "alive".
 function petTelemetry() {
@@ -2529,6 +2536,32 @@ function petTelemetry() {
 // the BLE requestDevice() chooser still counts as user-activated. On a
 // successful connect it consumes any firmware file that was queued by a
 // drag-drop / paste made while disconnected (see routeFirmwareFile).
+// Cache of devices this origin has already been granted (navigator.bluetooth
+// .getDevices()). Refreshed on load and after each grant so the Connect handler
+// can decide SYNCHRONOUSLY whether to reconnect-known vs open the chooser —
+// crucial because requestDevice() needs a live user gesture, and awaiting
+// getDevices() inside the click would consume it (→ "must be handling a user
+// gesture" → dead button on the first connect).
+let _bleGranted = [];
+async function refreshBleGranted() {
+  try {
+    if (navigator.bluetooth && typeof navigator.bluetooth.getDevices === "function") {
+      _bleGranted = await navigator.bluetooth.getDevices();
+    }
+  } catch (e) { /* keep whatever we had */ }
+  return _bleGranted;
+}
+// Pick the knob from the granted list. d.name is frequently null for a granted-
+// but-not-advertising device (the macOS-HID-held case, and after a browser
+// restart), so DON'T hard-gate on the name: prefer a Shortor-named match, else
+// fall back to the lone granted device / any unnamed one.
+function pickKnownBle() {
+  const l = _bleGranted || [];
+  return l.find(d => d.name && d.name.startsWith("Shortor"))
+      || (l.length === 1 ? l[0] : null)
+      || l.find(d => !d.name)
+      || (l.length ? l[0] : null);
+}
 async function connectFlow() {
   const kind = transportSel.value;
   transport = (kind === "ble") ? new BleTransport() : new SerialTransport();
@@ -2536,25 +2569,17 @@ async function connectFlow() {
     log(`Connecting via ${kind}...`);
     let name;
     if (kind === "ble") {
-      // getDevices()-first (REQUIRED for macOS): when the Mac is paired to the
-      // knob as a HID mouse it owns the connection, and an already-connected
-      // peripheral never shows up in requestDevice()'s scan chooser. getDevices()
-      // returns devices this origin already granted — including OS-connected ones
-      // — so we reconnect with no chooser. Also the better path on Windows
-      // (silent, no dialog). The chooser is only for the first-ever grant.
-      let known = null;
-      if (navigator.bluetooth && typeof navigator.bluetooth.getDevices === "function") {
-        try {
-          const list = await navigator.bluetooth.getDevices();
-          known = list.find(d => d.name && d.name.startsWith("Shortor")) || null;
-        } catch (e) { /* fall through to the chooser */ }
-      }
+      // getDevices()-first (REQUIRED for macOS while the OS owns the HID link;
+      // also silent on Windows). We read the CACHE synchronously here so the
+      // requestDevice() fallback below still runs inside the click's gesture.
+      const known = pickKnownBle();
       if (known) {
-        log(`Reconnecting to ${known.name} (no chooser)…`);
+        log(`Reconnecting to ${known.name || "the knob"} (no chooser)…`);
         name = await transport.connect(known);
       } else {
         log("First connect — opening the device chooser. On a Mac do this right after powering the knob on (before it pairs as a mouse), or Forget it in Bluetooth settings first; after one grant it reconnects silently.", "warn");
-        name = await transport.connect();   // requestDevice() — needs this user gesture
+        name = await transport.connect();   // requestDevice() — gesture still live (no await before it)
+        refreshBleGranted();                // remember the new grant for next time
       }
     } else {
       name = await transport.connect();
@@ -2666,9 +2691,13 @@ async function tryAutoReconnect() {
   return false;
 }
 
-// Fire auto-reconnect on initial page load. Doesn't block UI; on
-// failure the user just clicks Connect as before.
-window.addEventListener("load", () => { tryAutoReconnect().catch(() => {}); });
+// Fire auto-reconnect on initial page load. Doesn't block UI; on failure the
+// user just clicks Connect as before. Also seed the granted-devices cache up
+// front so the Connect button can decide reconnect-vs-chooser synchronously.
+window.addEventListener("load", () => {
+  refreshBleGranted().catch(() => {});
+  tryAutoReconnect().catch(() => {});
+});
 
 document.getElementById("btnWinding").onclick = async () => {
   if (!transport || !transport.isConnected())
@@ -3231,45 +3260,84 @@ function applyNvsLine(text) {
 
 // ─── Live-tunable registry (Cu / [TUN]) ──────────────────────────────────────
 // Self-describing: the firmware names+values come off the wire, so the panel
-// builds itself and new params need no UI change. Friendly labels for the known
-// set (raw name still shown as a tooltip); unknown names render under their key.
-const TUN_LABELS = {
-  rthr: "free-spin r gate", tfs: "r sustain (ms)", fsvm: "vel gate ×vmax",
-  fsvt: "vel sustain (ms)", coh: "probe coherence gate", ptone: "probe amp (V)",
-  sbkl: "scroll backlash (notches)", smax: "scroll cap (notches/frame)",
-  usbhap: "haptic on USB — 1=on (bench)",
+// builds itself and new params need no UI change. The [TUN] dump carries NO
+// units/ranges and values span wildly different scales (ms, ×, V, notches, mm),
+// so a per-name hint map gives known params a proper ranged slider + units.
+// Unknown names fall back to a plain number input (no assumed range = never wrong)
+// so future firmware params still appear.
+const TUN_META = {
+  rthr:   { label: "free-spin r gate",      unit: "",       min: 0,   max: 3,    step: 0.05 },
+  tfs:    { label: "r sustain",             unit: "ms",     min: 0,   max: 1000, step: 10   },
+  fsvm:   { label: "vel gate (×vmax)",      unit: "×",      min: 0,   max: 2,    step: 0.05 },
+  fsvt:   { label: "vel sustain",           unit: "ms",     min: 0,   max: 500,  step: 5    },
+  coh:    { label: "probe coherence gate",  unit: "",       min: 0,   max: 1,    step: 0.05 },
+  ptone:  { label: "probe amplitude",       unit: "V",      min: 0,   max: 1,    step: 0.01 },
+  sbkl:   { label: "scroll backlash",       unit: "notch",  min: 0,   max: 5,    step: 0.1  },
+  smax:   { label: "scroll cap",            unit: "/frame", min: 1,   max: 100,  step: 1    },
+  usbhap: { label: "haptic on USB (bench)", unit: "",       min: 0,   max: 1,    step: 1    },
+  csat:   { label: "balance pos-err sat",   unit: "mm",     min: 0.5, max: 20,   step: 0.1  },
 };
+const tunDecimals = (step) => step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+const tunFmt = (v, m) => `${v.toFixed(tunDecimals(m.step))}${m.unit ? " " + m.unit : ""}`;
 const tunState = {};   // name → value (UI-authoritative; write-through)
-const tunEls   = {};   // name → <input>
+const tunEls   = {};   // name → { input, valEl, meta }
 function setTunParam(name, val) {
   if (Number.isNaN(val)) return;
   tunState[name] = val;
-  let el = tunEls[name];
-  if (!el) {
+  let rec = tunEls[name];
+  if (!rec) {
     const wrap = document.getElementById("tunRegistry");
     if (!wrap) return;
+    const meta = TUN_META[name] || null;
     const row = document.createElement("div"); row.className = "slider-row";
     const lbl = document.createElement("label");
-    lbl.textContent = TUN_LABELS[name] || name;
-    lbl.title = name;
-    const span = document.createElement("span"); span.className = "value";
-    el = document.createElement("input");
-    el.type = "number"; el.step = "any"; el.id = `tun_${name}`;
-    el.style.width = "7ch"; el.style.textAlign = "right";
-    span.appendChild(el);
-    row.appendChild(lbl); row.appendChild(span);
+    lbl.textContent = meta ? meta.label : name;
+    lbl.title = name + (meta && meta.unit ? ` — ${meta.unit}` : "");
+    const valEl = document.createElement("span"); valEl.className = "value";
+    row.appendChild(lbl); row.appendChild(valEl);
+    let input;
+    if (meta) {
+      input = document.createElement("input");
+      input.type = "range"; input.min = meta.min;
+      input.max = Math.max(meta.max, val);   // expand to fit an out-of-range value
+      input.step = meta.step; input.value = val;
+      row.appendChild(input);
+      valEl.textContent = tunFmt(val, meta);
+      input.addEventListener("input", () => {
+        const v = parseFloat(input.value);
+        tunState[name] = v;
+        valEl.textContent = tunFmt(v, meta);
+        pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
+      });
+    } else {
+      input = document.createElement("input");
+      input.type = "number"; input.step = "any";
+      input.style.width = "7ch"; input.style.textAlign = "right";
+      input.value = val;
+      valEl.appendChild(input);
+      input.addEventListener("change", () => {
+        const v = parseFloat(input.value);
+        if (!isFinite(v)) { input.value = tunState[name]; return; }
+        tunState[name] = v;
+        pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
+      });
+    }
+    input.id = `tun_${name}`;
     wrap.appendChild(row);
-    tunEls[name] = el;
-    el.addEventListener("change", () => {
-      const v = parseFloat(el.value);
-      if (!isFinite(v)) { el.value = tunState[name]; return; }
-      tunState[name] = v;
-      pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };   // → "Cu name=v"
-    });
+    tunEls[name] = rec = { input, valEl, meta };
     const hint = document.getElementById("tunHint");
     if (hint) hint.textContent = "Changes apply live; Save to knob (Tune) to persist.";
   }
-  if (document.activeElement !== el) el.value = val;
+  // Sync from the wire unless the user is actively dragging/typing this control.
+  if (document.activeElement !== rec.input) {
+    if (rec.meta) {
+      if (val > parseFloat(rec.input.max)) rec.input.max = val;
+      rec.input.value = val;
+      rec.valEl.textContent = tunFmt(val, rec.meta);
+    } else {
+      rec.input.value = val;
+    }
+  }
 }
 // "[TUN] rthr=0.65 tfs=150.0 …"  (full dump from Z)  OR  "[TUN] rthr=0.7 set" (echo)
 function applyTunLine(text) {
