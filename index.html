@@ -50,7 +50,11 @@
   }
 
   * { box-sizing: border-box; }
-  html, body { height: 100%; }
+  html { height: 100%; }
+  /* min-height (not height) so the body box grows with the content; a fixed
+     height: 100% caps it at one viewport and the sticky header — confined to
+     the body box — scrolls off once you pass it. */
+  body { min-height: 100%; }
   body {
     margin: 0;
     color: var(--fg);
@@ -1346,7 +1350,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 30, date: "2026-06-02" };
+const APP_BUILD = { ver: 31, date: "2026-06-02" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1367,19 +1371,13 @@ const PARAMS = [
   { key: "b_damp",   code: "D", label: "Damping",                  min: 0,   max: 0.25, step: 0.001,def: 0.06, fmt: v => v.toFixed(4)   },
   { key: "j_virt",   code: "J", label: "Flywheel inertia",         min: 0,   max: 0.3,  step: 0.001,def: 0.03, fmt: v => v.toFixed(3)   },
   { key: "b_couple", code: "C", label: "Flywheel strength",        min: 0,   max: 0.3,  step: 0.001,def: 0,    fmt: v => v.toFixed(3)   },
-  // Shaft-velocity LPF cutoff used ONLY in haptic mode (feeds the detent
-  // viscous damping + virtual-flywheel admittance). Log-scaled like the
-  // balance-pane LPF sliders — `code` maps to the firmware `CH<hz>`
-  // command. The balance-mode shaft-vel LPF is a separate knob in the
-  // balancer pane (`fc_shaft_vel`, CF).
-  { key: "fc_shaft_vel_hap", code: "H", label: "Velocity smoothing (Hz)",
-    scale: "log", lo: 1, hi: 300, min: 0, max: 100, step: 0.5,
-    def: 39.6, fmt: v => `${v < 10 ? v.toFixed(1) : v.toFixed(0)}` },
-  // Haptic velocity comes from a 2nd-order tracking observer (kills the damping
-  // "grittiness"); this is its bandwidth, sent as `CO<hz>`. Feel param — live on
-  // send, persists only on the `S` snapshot (like the other cutoffs above).
-  { key: "fc_vel_obs_hap", code: "O", label: "Velocity observer (Hz)",
-    min: 5, max: 60, step: 1, def: 20, fmt: v => v.toFixed(0) },
+  // Haptic velocity filter — a 2nd-order tracking observer that replaced the old
+  // raw-LPF'd encoder velocity (kills the damping "grittiness"). This sets its
+  // bandwidth, sent as `CO<hz>`; log-scaled 5–500 Hz. Feel param — live on send,
+  // persists only on the `S` snapshot (like the balance-pane cutoffs).
+  { key: "fc_vel_obs_hap", code: "O", label: "Velocity LPF (Hz)",
+    scale: "log", lo: 5, hi: 500, min: 0, max: 100, step: 0.5,
+    def: 20, fmt: v => `${v < 10 ? v.toFixed(1) : v.toFixed(0)}` },
 ];
 
 // Balance-mode LQR gains + position setpoint. Indexed for `Cg<i><f>`
@@ -2308,7 +2306,7 @@ function applyParamsString(raw) {
                 J:  "j_virt",   BC: "b_couple",
                 k0: "k_x", k1: "k_xv", k2: "k_th", k3: "k_thd",
                 xref: "x_ref",
-                fcV: "fc_shaft_vel", fcVH: "fc_shaft_vel_hap", fcT: "fc_tilt" };
+                fcV: "fc_shaft_vel", fcT: "fc_tilt" };
   for (const part of raw.trim().split(/\s+/)) {
     const eq = part.indexOf("=");
     if (eq <= 0) continue;
@@ -2749,6 +2747,7 @@ async function flashFirmware(file) {
   prog.style.display = ""; prog.value = 0;
 
   // Send Y so the chip reboots into WiFi mode, then drop the transport.
+  const wasBle = transport instanceof BleTransport;
   if (transport && transport.isConnected()) {
     try {
       await transport.writeCmd("Y\n");
@@ -2756,6 +2755,11 @@ async function flashFirmware(file) {
     } catch (e) { log("Y send failed: " + e.message, "bad"); }
     await transport.disconnect();
   }
+  // The BLE link is intentionally down for the WiFi upload (and the chip is
+  // rebooting), so reflect Disconnected — otherwise the header keeps claiming
+  // "Connected" right through the flash. We try to reconnect once it's back.
+  transport = null;
+  setStatus(false);
 
   // Show the non-blocking "switch to Shortor-OTA WiFi" dim overlay.
   // Clicks fall through (pointer-events: none) so nothing is actually
@@ -2855,7 +2859,20 @@ async function flashFirmware(file) {
     });
     const dt = (performance.now() - t0) / 1000;
     log(`Flash OK in ${dt.toFixed(1)}s — knob is rebooting.`, "ok");
-    showFlashResult(true, `Flashed ${file.name} in ${dt.toFixed(1)} s. The knob is rebooting — reconnect once it's back.`);
+    showFlashResult(true, `Flashed ${file.name} in ${dt.toFixed(1)} s. The knob is rebooting — reconnecting automatically, or click Connect.`);
+    // The knob reboots into the new firmware (~several seconds). Once it's
+    // back, try to reconnect automatically; if that's not possible (serial,
+    // no getDevices(), or it isn't advertising yet) the UI stays Disconnected
+    // so the user knows to click Connect. BLE-only — serial needs a gesture.
+    if (wasBle) {
+      setTimeout(() => {
+        if (transport) return;   // already reconnected (manually or otherwise)
+        log("Reconnecting to the knob after flash…", "warn");
+        tryAutoReconnect().then(ok => {
+          if (!ok) log("Couldn't auto-reconnect — click Connect once the knob is back.", "warn");
+        }).catch(() => {});
+      }, 6000);
+    }
   } catch (e) {
     log("Flash failed: " + e.message, "bad");
     showFlashResult(false, `Couldn't flash ${file.name}: ${e.message}`);
@@ -3140,14 +3157,15 @@ function onParamChange(p, value) {
   pendingSends[p.key] = (p.key === "b_couple") ? effectiveBCouple() : value;
 }
 
-// Seed the velocity-observer slider (CO) from a wire value without re-sending.
+// Seed the velocity-LPF slider (CO) from a wire value without re-sending.
+// Log-scaled, so the slider's value is slider-space — convert via lpfSliderOf.
 function syncObsBw(hz) {
   if (hz == null || Number.isNaN(hz)) return;
   const key = "fc_vel_obs_hap";
+  const p = PARAMS.find(x => x.key === key);
   paramState[key] = hz;
   const sld = sliderEls[key];
-  if (sld && document.activeElement !== sld) sld.value = hz;
-  const p = PARAMS.find(x => x.key === key);
+  if (sld && document.activeElement !== sld) sld.value = p ? lpfSliderOf(p, hz) : hz;
   if (sliderValueEls[key] && p) sliderValueEls[key].textContent = p.fmt(hz);
 }
 // NVS-dump line ("NVS … pfl=… pwa=… fc_vo=… …", from the Z command) carries the
@@ -3206,7 +3224,7 @@ const PARAM_TOKEN = {   // UI param key → token in the params/Q blob
   detent_n: "dN", detent_a: "dA", detent_k: "dK", b_damp: "dD",
   j_virt: "J", b_couple: "BC",
   k_x: "k0", k_xv: "k1", k_th: "k2", k_thd: "k3", x_ref: "xref",
-  fc_shaft_vel: "fcV", fc_shaft_vel_hap: "fcVH", fc_tilt: "fcT",
+  fc_shaft_vel: "fcV", fc_tilt: "fcT",
 };
 function parseBlobValues(raw) {
   const out = {};
