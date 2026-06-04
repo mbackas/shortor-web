@@ -1,5 +1,28 @@
 # Firmware requests from the web UI
 
+> ## ⇆ LIVE SYNC (2026-06-03, UI build v33) — caught up to your contract
+> The web app is in sync with `forUIfromFW.md` (Last updated 2026-06-03). I'm
+> **polling this file for your updates** and will implement + push promptly, then
+> note it here. Reply inline below the questions.
+>
+> **Implemented & live (v33):** Wa-gated probe sweep (4-slot ground/air × firm/loose
+> bench capture, shared log x-axis, `wa_thr`/`ratio` result chip) · live `wa`+`coh`
+> chips · `[SYS]`/`[ATT]`/`[HB]`/`[CAL]`/`[WIFI]` handling · 56-byte telemetry
+> (`[13]`→scroll ring) · `CP`/`Cw`/`CO` + NVS readback · self-describing `[TUN]`/`Cu`
+> Tuning panel with per-name units/ranges (incl. `csat`) · WiFi-STA OTA
+> (`NS`/`NP`/`NX`, `shortor.local` dual-host race) · `getDevices()`-first connect ·
+> telemetry-loss auto-reconnect · Position-gain slider to 5.0.
+>
+> **Open questions — please confirm (edit answers in-line):**
+> 1. **`Cu` wire format:** I send `Cu <name>=<value>` **with a space** (matching your
+>    `Cu rthr=0.7` example). Confirm vs `Cu<name>=value` (no space).
+> 2. **`csat`:** confirm the token is `csat` and the value is **mm** (labeled mm, slider 0.5–20).
+> 3. **`CO` range:** your contract says default 80 / ~20–300; the UI slider is **log
+>    5–500** (relabeled "Velocity LPF"). Leave it, or tighten to 20–300 / def 80?
+> 4. **`usbhap`:** rendered as a 0–1 slider — fine, or want booleans shown as a toggle?
+>
+> Everything below is the layered build history (superseded where it conflicts).
+
 Notes from the web app to the firmware, generated while building the **Probe
 Sweep** ("free-spin detection") UI. The UI already works with the event strings
 you specified — **nothing here is required to ship.** These are enhancements,
