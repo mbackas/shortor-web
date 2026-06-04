@@ -194,6 +194,10 @@
     color: var(--fg);
     white-space: nowrap;
     line-height: 1.4;
+    /* Tabular figures on every pill (not just .live) so a digit changing
+       can't change the pill's width — setCoh/setContact drop the .live
+       class when they colour themselves, so it has to live on the base. */
+    font-feature-settings: 'tnum';
   }
   .pill:empty { display: none; }
   /* Status LED before pills that carry a state class. */
@@ -216,6 +220,18 @@
     border-color: rgba(70,214,196,0.28);
     background: rgba(70,214,196,0.06);
   }
+  /* Reserve each live pill's worst-case width so its value can change
+     length without resizing the pill (and reflowing the wrapped row).
+     Text is left-anchored, so the label edge stays put and the value
+     just extends into the reserved space. ch sizes are content chars;
+     +18px covers the border-box padding (8×2) + border (1×2). */
+  #liveTorque  { min-width: calc(14ch + 18px); }
+  #liveTilt    { min-width: calc(14ch + 18px); }
+  #liveTap     { min-width: calc(12ch + 18px); }
+  #liveFFWake  { min-width: calc(13ch + 18px); }
+  #liveLoopHz  { min-width: calc(12ch + 18px); }
+  #liveContact { min-width: calc(11ch + 18px); }
+  #liveCoh     { min-width: calc( 8ch + 18px); }
 
   /* ── Battery gauge pill ─────────────────────────────── */
   /* SOC% from telemetry pkt[12]. Mini cell icon whose fill width = SOC
@@ -1259,6 +1275,9 @@
         <div class="sweep-legend" id="sweepDeltaLegend"></div>
       </div>
       <div id="lqrSliders" style="margin-top: 8px;"></div>
+      <div class="row" style="margin-top: 12px;">
+        <button id="btnSaveBalance" class="primary needs-conn">Save to flash</button>
+      </div>
       <canvas id="balanceCanvas" height="200" style="margin-top: 12px;"></canvas>
       <div class="stat" id="balanceInfo" style="margin-top: 6px;"></div>
       <canvas id="biasCanvas" height="100" style="margin-top: 10px;"></canvas>
@@ -1277,6 +1296,9 @@
         automatically.
       </p>
       <div id="tunRegistry"></div>
+      <div class="row" style="margin-top: 8px;">
+        <button id="btnSaveTun" class="primary needs-conn">Save to flash</button>
+      </div>
       <div class="row" style="margin-top: 8px;">
         <span id="tunHint" class="stat" style="font-size: 11px;">Connect — the knob's tunables populate on the NVS read.</span>
       </div>
@@ -1367,7 +1389,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 35, date: "2026-06-03" };
+const APP_BUILD = { ver: 36, date: "2026-06-03" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -3573,11 +3595,17 @@ document.getElementById("btnProbeSweep").onclick = async () => {
   catch (e) { log("Probe sweep failed: " + e.message, "bad"); }
 };
 
-document.getElementById("btnSave").onclick = async () => {
+// Slider values push live to the knob's RAM as you move them; "S\n"
+// commits the whole live set to NVS, so every group's save button shares
+// this one path — each is just a convenient commit next to its sliders.
+async function saveToFlash(what) {
   if (!transport) return log("Not connected.", "bad");
-  try { await transport.writeCmd("S\n"); log("Saved params to NVS.", "ok"); }
+  try { await transport.writeCmd("S\n"); log(`Saved ${what} to NVS.`, "ok"); }
   catch (e) { log("Save failed: " + e.message, "bad"); }
-};
+}
+document.getElementById("btnSave").onclick = () => saveToFlash("params");
+document.getElementById("btnSaveBalance").onclick = () => saveToFlash("balancing params");
+document.getElementById("btnSaveTun").onclick = () => saveToFlash("tunables");
 document.getElementById("btnForget").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   if (!confirm("Reset tuning? The knob will discard its saved params and boot from firmware defaults next power-up.")) return;
