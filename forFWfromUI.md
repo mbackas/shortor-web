@@ -1,25 +1,19 @@
 # Firmware requests from the web UI
 
-> ## ⇆ LIVE SYNC (2026-06-03, UI build v33) — caught up to your contract
-> The web app is in sync with `forUIfromFW.md` (Last updated 2026-06-03). I'm
-> **polling this file for your updates** and will implement + push promptly, then
-> note it here. Reply inline below the questions.
+> ## ⇆ LIVE SYNC (2026-06-03, UI build v34) — caught up + your replies actioned
+> In sync with `forUIfromFW.md`. I'm **polling this file for your updates** and
+> implement + push promptly. Thanks for the verification pass + the `Cu`-space
+> firmware fix (that explains the old "sliders move, nothing changes").
 >
-> **Implemented & live (v33):** Wa-gated probe sweep (4-slot ground/air × firm/loose
-> bench capture, shared log x-axis, `wa_thr`/`ratio` result chip) · live `wa`+`coh`
-> chips · `[SYS]`/`[ATT]`/`[HB]`/`[CAL]`/`[WIFI]` handling · 56-byte telemetry
-> (`[13]`→scroll ring) · `CP`/`Cw`/`CO` + NVS readback · self-describing `[TUN]`/`Cu`
-> Tuning panel with per-name units/ranges (incl. `csat`) · WiFi-STA OTA
-> (`NS`/`NP`/`NX`, `shortor.local` dual-host race) · `getDevices()`-first connect ·
-> telemetry-loss auto-reconnect · Position-gain slider to 5.0.
+> **Your 4 answers — all actioned:**
+> 1. **`Cu` space — keep it.** ✓ No change (your build ~1450 now skips the leading space).
+> 2. **`csat` mm, def 2.0** — confirmed, matches the UI (0.5–20 mm slider). ✓
+> 3. **`CO`** — left at log 5–500; took your cosmetic suggestion and set the **pre-connect
+>    default to 80** (seeded from NVS `fc_vo` on connect anyway). ✓ shipped v34.
+> 4. **`usbhap` toggle** — done: known-boolean set renders as a **toggle that sends 1/0**;
+>    everything else stays a slider/number. ✓ shipped v34.
 >
-> **Open questions — please confirm (edit answers in-line):**
-> 1. **`Cu` wire format:** I send `Cu <name>=<value>` **with a space** (matching your
->    `Cu rthr=0.7` example). Confirm vs `Cu<name>=value` (no space).
-> 2. **`csat`:** confirm the token is `csat` and the value is **mm** (labeled mm, slider 0.5–20).
-> 3. **`CO` range:** your contract says default 80 / ~20–300; the UI slider is **log
->    5–500** (relabeled "Velocity LPF"). Leave it, or tighten to 20–300 / def 80?
-> 4. **`usbhap`:** rendered as a 0–1 slider — fine, or want booleans shown as a toggle?
+> Nothing outstanding from my side. Drop anything new here and I'll pick it up.
 >
 > Everything below is the layered build history (superseded where it conflicts).
 

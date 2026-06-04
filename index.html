@@ -1367,7 +1367,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 34, date: "2026-06-03" };
+const APP_BUILD = { ver: 35, date: "2026-06-03" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1394,7 +1394,7 @@ const PARAMS = [
   // persists only on the `S` snapshot (like the balance-pane cutoffs).
   { key: "fc_vel_obs_hap", code: "O", label: "Velocity LPF (Hz)",
     scale: "log", lo: 5, hi: 500, min: 0, max: 100, step: 0.5,
-    def: 20, fmt: v => `${v < 10 ? v.toFixed(1) : v.toFixed(0)}` },
+    def: 80, fmt: v => `${v < 10 ? v.toFixed(1) : v.toFixed(0)}` },
 ];
 
 // Balance-mode LQR gains + position setpoint. Indexed for `Cg<i><f>`
@@ -3277,6 +3277,9 @@ const TUN_META = {
   usbhap: { label: "haptic on USB (bench)", unit: "",       min: 0,   max: 1,    step: 1    },
   csat:   { label: "balance pos-err sat",   unit: "mm",     min: 0.5, max: 20,   step: 0.1  },
 };
+// [TUN] carries no type metadata, so booleans are a UI-side known set — rendered
+// as a toggle that sends 1/0 instead of a slider. (Per FW: only usbhap today.)
+const TUN_BOOL = new Set(["usbhap"]);
 const tunDecimals = (step) => step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
 const tunFmt = (v, m) => `${v.toFixed(tunDecimals(m.step))}${m.unit ? " " + m.unit : ""}`;
 const tunState = {};   // name → value (UI-authoritative; write-through)
@@ -3296,7 +3299,17 @@ function setTunParam(name, val) {
     const valEl = document.createElement("span"); valEl.className = "value";
     row.appendChild(lbl); row.appendChild(valEl);
     let input;
-    if (meta) {
+    if (TUN_BOOL.has(name)) {
+      // boolean tunable → toggle that sends 1/0
+      input = document.createElement("input");
+      input.type = "checkbox"; input.checked = (val != 0);
+      valEl.appendChild(input);
+      input.addEventListener("change", () => {
+        const v = input.checked ? 1 : 0;
+        tunState[name] = v;
+        pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
+      });
+    } else if (meta) {
       input = document.createElement("input");
       input.type = "range"; input.min = meta.min;
       input.max = Math.max(meta.max, val);   // expand to fit an out-of-range value
@@ -3330,7 +3343,9 @@ function setTunParam(name, val) {
   }
   // Sync from the wire unless the user is actively dragging/typing this control.
   if (document.activeElement !== rec.input) {
-    if (rec.meta) {
+    if (rec.input.type === "checkbox") {
+      rec.input.checked = (val != 0);
+    } else if (rec.meta) {
       if (val > parseFloat(rec.input.max)) rec.input.max = val;
       rec.input.value = val;
       rec.valEl.textContent = tunFmt(val, rec.meta);
