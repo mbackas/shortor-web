@@ -778,20 +778,26 @@
   /* ── Console ────────────────────────────────────────── */
   #console {
     margin: 0;
-    height: 120px;
+    height: 440px;
+    min-height: 160px;
+    resize: vertical;
     overflow: auto;
-    font: 11px/1.5 var(--font-mono);
+    font: 12.5px/1.65 var(--font-mono);
     color: var(--cyan);
     background:
       repeating-linear-gradient(0deg, rgba(70,214,196,0.025) 0px, rgba(70,214,196,0.025) 1px, transparent 1px, transparent 3px),
       var(--inset);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
-    padding: 8px 10px;
+    padding: 10px 12px;
     white-space: pre-wrap;
-    word-break: break-all;
+    /* Wrap at word/token boundaries; only hard-break a token too long to
+       fit (break-all used to split every line mid-character). */
+    overflow-wrap: anywhere;
+    word-break: normal;
     overscroll-behavior: contain;
-    text-shadow: 0 0 8px rgba(70,214,196,0.18);
+    /* Light glow only — the old 8px shadow smeared the small mono text. */
+    text-shadow: 0 0 3px rgba(70,214,196,0.12);
   }
   #console::-webkit-scrollbar { width: 7px; }
   #console::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
@@ -1389,7 +1395,7 @@
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 36, date: "2026-06-03" };
+const APP_BUILD = { ver: 37, date: "2026-06-04" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1492,12 +1498,25 @@ function loadPresets() {
 }
 function savePresets() {
   try { localStorage.setItem(PRESETS_LS_KEY, JSON.stringify(PRESETS)); }
-  catch (e) { log("Could not persist presets: " + e.message, "bad"); }
+  catch (e) { log("Could not persist presets: " + errMsg(e), "bad"); }
 }
 let PRESETS = loadPresets();
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const consoleEl = document.getElementById("console");
+// Pull a human-readable string out of anything that gets thrown/rejected.
+// Not every environment throws an Error: iOS Web-Bluetooth browsers (Bluefy,
+// WebBLE) reject with a bare string, a DOMException whose .message is empty,
+// or sometimes `undefined` — all of which used to surface as the literal
+// "Connect failed: undefined". Fall back through name → stringify → a label.
+function errMsg(e) {
+  if (e == null) return "unknown error (no details)";
+  if (typeof e === "string") return e || "unknown error";
+  if (e.message) return e.message;
+  if (e.name) return e.name;                       // e.g. DOMException "NotFoundError"
+  try { const s = String(e); if (s && s !== "[object Object]") return s; } catch {}
+  return "unknown error (no details)";
+}
 let lastLogMsg  = null;
 let lastLogEl   = null;
 let lastLogN    = 1;
@@ -2193,7 +2212,7 @@ class BleTransport {
       log("Subscribed to FOC event channel.", "ok");
     } catch (e) {
       this.event = null;
-      log("FOC event channel unavailable: " + e.message, "bad");
+      log("FOC event channel unavailable: " + errMsg(e), "bad");
     }
   }
   // Retry GATT-connect + service discovery on a backoff until the chip
@@ -2299,7 +2318,7 @@ class SerialTransport {
         for (let i = 0; i < lines.length - 1; i++) onSerialLine(lines[i].replace(/\r$/, ""));
       }
     } catch (e) {
-      this._readError = e.message;
+      this._readError = errMsg(e);
     } finally {
       try { this.reader.releaseLock(); } catch (e) {}
       this.reader = null;
@@ -2620,7 +2639,7 @@ async function connectFlow() {
           log("Could not read params from knob (timeout).", "bad");
         }
       } catch (e) {
-        log("Param read failed: " + e.message, "bad");
+        log("Param read failed: " + errMsg(e), "bad");
       }
     }
     // Pull the NVS dump line so the detector-param controls (probe freq, Wa
@@ -2635,7 +2654,7 @@ async function connectFlow() {
     await consumePendingFlash();   // a .bin dropped while offline → flash now
     return true;
   } catch (e) {
-    log("Connect failed: " + e.message, "bad");
+    log("Connect failed: " + errMsg(e), "bad");
     transport = null;
     clearPendingFlash("Connect cancelled — drop or paste the .bin again once connected.");
     return false;
@@ -2678,7 +2697,7 @@ async function tryAutoReconnect() {
   let devices = [];
   try { devices = await navigator.bluetooth.getDevices(); }
   catch (e) {
-    log("getDevices() error: " + e.message, "warn");
+    log("getDevices() error: " + errMsg(e), "warn");
     return false;
   }
   if (devices.length === 0) {
@@ -2727,7 +2746,7 @@ document.getElementById("btnWinding").onclick = async () => {
   try {
     await transport.writeCmd("T\n");
     log("Winding test triggered — result coming in via event notify.", "ok");
-  } catch (e) { log("Winding test failed: " + e.message, "bad"); }
+  } catch (e) { log("Winding test failed: " + errMsg(e), "bad"); }
 };
 
 document.getElementById("btnRecal").onclick = async () => {
@@ -2736,7 +2755,7 @@ document.getElementById("btnRecal").onclick = async () => {
   try {
     await transport.writeCmd("L\n");
     log("Recal sent — wiping cached alignment and rebooting.", "ok");
-  } catch (e) { log("Recal failed: " + e.message, "bad"); }
+  } catch (e) { log("Recal failed: " + errMsg(e), "bad"); }
 };
 
 document.getElementById("btnDumpNvs").onclick = async () => {
@@ -2745,7 +2764,7 @@ document.getElementById("btnDumpNvs").onclick = async () => {
   try {
     await transport.writeCmd("Z\n");
     log("NVS dump requested — the 'NVS …' line will arrive on the event channel.", "ok");
-  } catch (e) { log("NVS dump failed: " + e.message, "bad"); }
+  } catch (e) { log("NVS dump failed: " + errMsg(e), "bad"); }
 };
 // Hybrid flash: BLE for control, SoftAP+HTTP for the bulk transfer.
 //   1. Send Y over the active transport → chip reboots into WiFi mode.
@@ -2855,7 +2874,7 @@ async function flashFirmware(file) {
     try {
       await transport.writeCmd("Y\n");
       log("Sent Y — knob rebooting into WiFi mode.");
-    } catch (e) { log("Y send failed: " + e.message, "bad"); }
+    } catch (e) { log("Y send failed: " + errMsg(e), "bad"); }
     await transport.disconnect();
   }
   // The BLE link is intentionally down for the WiFi upload (and the chip is
@@ -2977,8 +2996,8 @@ async function flashFirmware(file) {
       }, 6000);
     }
   } catch (e) {
-    log("Flash failed: " + e.message, "bad");
-    showFlashResult(false, `Couldn't flash ${file.name}: ${e.message}`);
+    log("Flash failed: " + errMsg(e), "bad");
+    showFlashResult(false, `Couldn't flash ${file.name}: ${errMsg(e)}`);
   } finally {
     prog.style.display = "none";
     flashInFlight = false;
@@ -3018,7 +3037,7 @@ function refreshWifiHint() {
       try { localStorage.setItem(WIFI_SSID_LS, ssid); } catch (e) {}
       wifiStaConfigured = true; refreshWifiHint();
       log(`Wi-Fi sent to knob (SSID “${ssid}”${pass ? "" : " — no password"}). It’ll join on the next OTA (Y).`, "ok");
-    } catch (e) { log("Wi-Fi send failed: " + e.message, "bad"); }
+    } catch (e) { log("Wi-Fi send failed: " + errMsg(e), "bad"); }
   };
   const clear = document.getElementById("btnWifiClear");
   if (clear) clear.onclick = async () => {
@@ -3029,7 +3048,7 @@ function refreshWifiHint() {
       const pe = document.getElementById("wifiPass"); if (pe) pe.value = "";
       wifiStaConfigured = false; refreshWifiHint();
       log("Wi-Fi creds cleared — OTA will use the Shortor-OTA SoftAP.", "ok");
-    } catch (e) { log("Clear failed: " + e.message, "bad"); }
+    } catch (e) { log("Clear failed: " + errMsg(e), "bad"); }
   };
 })();
 
@@ -3044,7 +3063,7 @@ document.getElementById("btnFlash").onclick = async () => {
     try {
       const f = await _fileFromHandle(_fwHandle);
       if (f) { flashFirmware(f); return; }
-    } catch (e) { log("Stored firmware unreadable: " + e.message, "warn"); }
+    } catch (e) { log("Stored firmware unreadable: " + errMsg(e), "warn"); }
   }
   // (2) current file input
   const input = document.getElementById("firmwareFile");
@@ -3415,7 +3434,7 @@ setInterval(async () => {
       }
       if (!line) continue;
       try { await transport.writeCmd(line); }
-      catch (e) { log("Cmd write failed: " + e.message, "bad"); break; }
+      catch (e) { log("Cmd write failed: " + errMsg(e), "bad"); break; }
     }
   } finally { sliderSending = false; }
 }, 80);
@@ -3570,29 +3589,29 @@ function updateModePill(mode) {
 document.getElementById("btnCalUp").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   try { await transport.writeCmd("GU\n"); log("Calibrating upright — hold still…", "ok"); }
-  catch (e) { log("Cal failed: " + e.message, "bad"); }
+  catch (e) { log("Cal failed: " + errMsg(e), "bad"); }
 };
 document.getElementById("btnCalFlat").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   try { await transport.writeCmd("GF\n"); log("Calibrating flat — hold still…", "ok"); }
-  catch (e) { log("Cal failed: " + e.message, "bad"); }
+  catch (e) { log("Cal failed: " + errMsg(e), "bad"); }
 };
 document.getElementById("btnCalRot").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   try { await transport.writeCmd("GR\n"); log("Rotated tilt axis 90°.", "ok"); }
-  catch (e) { log("Rotate failed: " + e.message, "bad"); }
+  catch (e) { log("Rotate failed: " + errMsg(e), "bad"); }
 };
 document.getElementById("btnFreeSpin").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   if (!confirm("Free-spin calibration: hold the bot OFF the ground first — it drives the wheel through a torque ramp. Ready?")) return;
   try { await transport.writeCmd("J\n"); log("Free-spin cal queued — keep the bot in the air.", "ok"); }
-  catch (e) { log("Free-spin cal failed: " + e.message, "bad"); }
+  catch (e) { log("Free-spin cal failed: " + errMsg(e), "bad"); }
 };
 document.getElementById("btnProbeSweep").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   if (!confirm("Probe sweep (2 passes): run once with the bot on the ground, then run again held in the air. It auto-picks the probe frequency + threshold and saves them. Hold steady (~8 s each).")) return;
   try { await transport.writeCmd("W\n"); log("Probe sweep — hold steady (run once on ground, once in air)…", "ok"); }
-  catch (e) { log("Probe sweep failed: " + e.message, "bad"); }
+  catch (e) { log("Probe sweep failed: " + errMsg(e), "bad"); }
 };
 
 // Slider values push live to the knob's RAM as you move them; "S\n"
@@ -3601,7 +3620,7 @@ document.getElementById("btnProbeSweep").onclick = async () => {
 async function saveToFlash(what) {
   if (!transport) return log("Not connected.", "bad");
   try { await transport.writeCmd("S\n"); log(`Saved ${what} to NVS.`, "ok"); }
-  catch (e) { log("Save failed: " + e.message, "bad"); }
+  catch (e) { log("Save failed: " + errMsg(e), "bad"); }
 }
 document.getElementById("btnSave").onclick = () => saveToFlash("params");
 document.getElementById("btnSaveBalance").onclick = () => saveToFlash("balancing params");
@@ -3610,7 +3629,7 @@ document.getElementById("btnForget").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   if (!confirm("Reset tuning? The knob will discard its saved params and boot from firmware defaults next power-up.")) return;
   try { await transport.writeCmd("F\n"); log("Tuning reset — knob will use defaults on next boot.", "ok"); }
-  catch (e) { log("Reset tuning failed: " + e.message, "bad"); }
+  catch (e) { log("Reset tuning failed: " + errMsg(e), "bad"); }
 };
 
 // ─── Presets ─────────────────────────────────────────────────────────────────
@@ -3709,7 +3728,7 @@ document.getElementById("btnSavePreset").onclick = async () => {
   savePresets();
   renderPresets();
   lastAppliedPreset = name;
-  try { await pushPresetsToDevice(); } catch (e) { log("Preset save to knob failed: " + e.message, "bad"); }
+  try { await pushPresetsToDevice(); } catch (e) { log("Preset save to knob failed: " + errMsg(e), "bad"); }
   log(`${existed ? "Updated" : "Created"} preset "${name}"${transport ? " (saved to knob)" : " (local only — not connected)"}.`, "ok");
 };
 document.getElementById("btnResetPresets").onclick = async () => {
