@@ -1166,6 +1166,7 @@
     <button id="btnConnect" class="primary">Connect</button>
   </div>
   <div class="hdr-telem">
+    <button id="btnLieStand" class="needs-conn" title="Drop to DAMPED mode (wheel limp) so you can lay the bot down; press again and it stands itself up. Sends M1/M0.">Lie down</button>
     <span id="modePill" class="pill">— mode</span>
     <span id="liveVoltage" class="pill live">V = —</span>
     <span id="battPill" class="pill batt usb" title="Battery state-of-charge (OCV estimate; — = unknown / USB power)">
@@ -1415,7 +1416,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 40, date: "2026-06-27" };
+const APP_BUILD = { ver: 41, date: "2026-06-27" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2224,7 +2225,16 @@ class BleTransport {
           const el = document.getElementById("liveLoopHz");
           const m  = text.match(/(\d[\d.]*k?)\/(\S+)/);
           if (el && m) el.textContent = (m[2] && m[2] !== "..") ? `${m[1]}/${m[2]} Hz` : `${m[1]} Hz`;
+          // Mode word (first token: BAL/HAP/FF/LOCK/DAMP) drives the M-button state.
+          const sm = text.match(/^\[SYS\]\s+(\w+)/);
+          if (sm) setDampedState(sm[1] === "DAMP");
           return;
+        }
+        // [MODE] transitions — authoritative for the Lie-down/Stand-up button.
+        // "[MODE] DAMPED (hold) …" → held; "balance armed"/"STAND-UP kick" → released.
+        if (text && /^\[MODE\]/i.test(text)) {
+          setDampedState(/\bDAMPED\b/i.test(text));
+          // fall through so the transition still echoes to the console
         }
         // [SWP] … probe-sweep lines (begin / data row / captured / paired / saved).
         // Capture into the run-vs-run table + charts so the ground/air gap is
@@ -2565,6 +2575,7 @@ function setStatus(ok, name) {
     for (const [id, txt] of Object.entries(blanks)) {
       const el = document.getElementById(id); if (el) el.textContent = txt;
     }
+    setDampedState(false);   // reset M-button label so a drop doesn't freeze "Stand up"
     updateModePill(-1);   // → "— mode", neutral class
     onBatterySoc(-1);     // → unknown/USB glyph, no stale charge level
     setCoh(null);         // → "coh —", neutral (no stale confidence reading)
@@ -3380,6 +3391,14 @@ const TUN_META = {
   smax:   { label: "scroll cap",            unit: "/frame", min: 1,   max: 100,  step: 1    },
   usbhap: { label: "haptic on USB (bench)", unit: "",       min: 0,   max: 1,    step: 1    },
   csat:   { label: "balance pos-err sat",   unit: "mm",     min: 0.5, max: 20,   step: 0.1  },
+  ssms:   { label: "balance soft-start",    unit: "ms",     min: 0,   max: 600,  step: 10   },
+  sukt:   { label: "stand-up kick time",    unit: "ms",     min: 0,   max: 500,  step: 10   },
+  sukf:   { label: "stand-up kick torque",  unit: "×Vlim",  min: 0,   max: 1,    step: 0.05 },
+  suks:   { label: "stand-up kick polarity",unit: "",       min: -1,  max: 1,    step: 2    },
+  vsat:   { label: "LQR vel-state sat",     unit: "rev/s",  min: 0.5, max: 6,    step: 0.1  },
+  ffg:    { label: "free-fall entry thr",   unit: "g",      min: 0.1, max: 0.5,  step: 0.01 },
+  ffms:   { label: "free-fall entry sustain",unit: "ms",    min: 20,  max: 150,  step: 5    },
+  ffwv:   { label: "free-fall wheel cap",   unit: "rev/s",  min: 2,   max: 20,   step: 0.5  },
 };
 // [TUN] carries no type metadata, so booleans are a UI-side known set — rendered
 // as a toggle that sends 1/0 instead of a slider. (Per FW: only usbhap today.)
@@ -3640,6 +3659,10 @@ updateCalStatus();
 function updateModePill(mode) {
   const el = document.getElementById("modePill");
   if (!el) return;
+  if (typeof mode === "number") _lastModeFloat = mode;   // remember for damped refreshes
+  // DAMPED (M-button hold) overrides the telemetry mode float — the bot is
+  // intentionally limp, so show that regardless of the [5] mode value.
+  if (_damped) { el.textContent = "DAMPED"; el.className = "pill warn"; return; }
   if (mode === 1) {
     el.textContent = "BALANCE"; el.className = "pill ok";
   } else if (mode === 0) {
@@ -3648,6 +3671,34 @@ function updateModePill(mode) {
     el.textContent = "— mode";  el.className = "pill";
   }
 }
+
+// Damped-hold state for the M button ("Lie down" ⇄ "Stand up"). Driven by the
+// firmware's [MODE] events and the [SYS] mode word (DAMP) — never a blind local
+// toggle — so a dropped packet can't desync the label. See forUIfromFW.md §1.
+let _damped = false;
+function setDampedState(d) {
+  d = !!d;
+  if (d === _damped) return;
+  _damped = d;
+  const b = document.getElementById("btnLieStand");
+  if (b) b.textContent = d ? "Stand up" : "Lie down";
+  updateModePill(_lastModeFloat);
+}
+let _lastModeFloat = -1;
+
+document.getElementById("btnLieStand").onclick = async () => {
+  if (!transport || !transport.isConnected()) return log("Not connected.", "bad");
+  // Send the EXPLICIT next state (M1 = enter damped-hold, M0 = release → balance)
+  // rather than a blind M toggle, so a dropped packet can't desync the label.
+  // The firmware [MODE]/[SYS] events confirm/correct it.
+  const enter = !_damped;
+  try {
+    await transport.writeCmd(enter ? "M1\n" : "M0\n");
+    log(enter ? "Lie down → DAMPED hold (lay it on the table)."
+              : "Stand up → releasing to balance (it stands itself up).", "ok");
+    setDampedState(enter);   // optimistic; events reconcile
+  } catch (e) { log("Mode toggle failed: " + errMsg(e), "bad"); }
+};
 
 document.getElementById("btnCalUp").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");

@@ -334,3 +334,41 @@ by **service UUID**, not name. To make iOS discovery fast + robust, please
 in the scan response is fine — iOS active-scans and reads it). Also confirm the
 knob isn't bonding as an HID mouse before the page can grab it (the macOS §5
 failure mode). FW ≥1442 advertising-name fix assumed in place.
+
+## Update 2026-06-27 (pm) — caught the UI up to your wire contract (M button + new tunables)
+
+Read your `forUIfromFW.md` (the 2026-06-03 contract had a batch we hadn't
+implemented). All actioned + shipped:
+
+- **`M` mode button — DONE.** New top-level **"Lie down / Stand up"** button in
+  the header next to the mode pill (greyed until connected). Sends the **explicit
+  state** as you recommended — **`M1`** to enter damped-hold, **`M0`** to release →
+  balance — never a blind `M`, so a dropped packet can't desync the label.
+  - Label/state is driven by firmware, not the click: we parse **`[MODE]`** lines
+    (`\bDAMPED\b` → held; `balance armed` / `STAND-UP kick` → released) **and** the
+    **`[SYS]` mode word** (`DAMP` → held). The click is optimistic and the events
+    reconcile it.
+  - Mode pill now shows **`DAMPED`** (amber) whenever the hold is active,
+    overriding the telemetry `[5]` mode float. Resets to "Lie down" on disconnect.
+  - The stand-up kick is automatic FW-side per your note — no UI for it beyond the
+    `suk*` tunables below.
+- **New live-tunables — DONE (hint-map entries w/ units+ranges).** Added to the
+  per-name map so they render as proper ranged sliders instead of bare numbers:
+  `ssms` (ms, 0–600/10) · `sukt` (ms, 0–500/10) · `sukf` (×Vlim, 0–1/0.05) ·
+  `suks` (polarity, slider snaps **−1 / +1**) · `vsat` (rev/s, 0.5–6/0.1) ·
+  `ffg` (g, 0.10–0.50/0.01) · `ffms` (ms, 20–150/5) · `ffwv` (rev/s, 2–20/0.5).
+  (They already appeared via the `[TUN]` auto-panel; this just gives them units.)
+- **56-byte / 14-float telemetry — already covered.** We read `[13]`@byte 52 for
+  the scroll-practice ring and `[12]`@48 for SOC. No change needed.
+
+**Open questions (low priority):**
+1. **`suks` polarity** — we render it as a slider that snaps to **−1 / +1** only.
+   Fine, or would you rather it be a plain ±1 toggle? (The `[TUN]` dump is
+   value-only so we can't tell it's a polarity from the wire.)
+2. **DAMPED on the telemetry `[5]` mode float** — we currently ignore the float
+   while damped and trust `[MODE]`/`[SYS]` text. If `[5]` carries a distinct value
+   for DAMP (e.g. `2`), tell us and we'll drive the pill from the float too as a
+   belt-and-suspenders.
+3. **`[SYS]` health counters `rdfail`/`dtclip`/`imurec`** — not surfaced yet
+   (deliberately deferred). Say the word and we'll add a tiny indicator that
+   flags non-zero / rising.
