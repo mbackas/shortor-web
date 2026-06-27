@@ -302,3 +302,35 @@ Unrelated UI tweaks this session: telemetry-loss now tears down a stale GATT and
 reconnects immediately (was: sit Disconnected); Position-gain slider max raised to
 5.0; and a connect-button gesture regression fixed (getDevices cache read
 synchronously so requestDevice keeps its user activation).
+
+## Update 2026-06-27 — Bluefy/iOS "Connect does nothing" — FIXED (UI side)
+
+**Symptom.** On Bluefy (Web Bluetooth browser for iOS), tapping **Connect** did
+nothing — no chooser, no log past `Reconnecting to the knob (no chooser)…`.
+Worked fine on desktop Chrome.
+
+**Cause.** Bluefy *does* expose `navigator.bluetooth.getDevices()` (unlike older
+iOS WebBLE — confirmed via a new boot diagnostic: `secure=true ble=true
+serial=false getDevices=true`). So the Connect button took the silent
+`getDevices()` → `gatt.connect()` reconnect path. But **CoreBluetooth's connect
+has no timeout** — `gatt.connect()` to a remembered peripheral that isn't
+currently reachable hangs *forever*, with no fall-through to the chooser. Dead
+button.
+
+**Fix (UI only, shipped):**
+- `withTimeout()` wraps every `gatt.connect()`; cancels via `gatt.disconnect()`.
+- Silent reconnect bounded to **6 s**; on timeout we set a `_forceChooser` flag
+  and prompt *"tap Connect again."* The next tap skips the silent path
+  **synchronously** (so `requestDevice()`'s user gesture survives) and opens the
+  chooser. Confirmed working on Bluefy.
+- Same bound on auto-reconnect-on-load and the reconnect loop; a failed connect
+  is torn down so it can't spawn a phantom reconnect loop.
+
+**FW angle — still worth doing.** The chooser works now, but on iOS the *first*
+connect costs a ~6 s silent-reconnect timeout before the chooser appears, and
+discovery still leans entirely on `namePrefix:"Shortor"`. CoreBluetooth filters
+by **service UUID**, not name. To make iOS discovery fast + robust, please
+**advertise the 128-bit service UUID `e69a0011-…` in the advertisement** (name
+in the scan response is fine — iOS active-scans and reads it). Also confirm the
+knob isn't bonding as an HID mouse before the page can grab it (the macOS §5
+failure mode). FW ≥1442 advertising-name fix assumed in place.
