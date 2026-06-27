@@ -1391,11 +1391,31 @@
 <script>
 "use strict";
 
+// ─── Crash surfacing (Bluefy/iOS has no devtools) ───────────────────────────
+// If anything throws while this script executes at load, every line after it
+// — including the btnConnect.onclick wiring — never runs, so the button is
+// dead and silent. Catch it and show it: to the on-screen console once that
+// exists, else an alert() so a load-time crash is never invisible on a phone.
+function _surfaceErr(m, cls) {
+  try {
+    if (typeof consoleEl !== "undefined" && consoleEl) { log(m, cls || "bad"); return; }
+  } catch (_) {}
+  try { alert(m); } catch (_) {}
+}
+window.addEventListener("error", (e) => {
+  const where = e.filename ? `${String(e.filename).split("/").pop()}:${e.lineno}:${e.colno}` : "?";
+  _surfaceErr(`JS error: ${e.message} @ ${where}`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason;
+  _surfaceErr("Promise rejected: " + (r && r.message ? r.message : r));
+});
+
 // Auto-stamped by the pre-commit hook (.git/hooks/pre-commit): ver is the
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 37, date: "2026-06-04" };
+const APP_BUILD = { ver: 38, date: "2026-06-27" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -4283,6 +4303,12 @@ if (!("bluetooth" in navigator)) {
 if (!("serial" in navigator)) {
   transportSel.querySelector("option[value='serial']").disabled = true;
 }
+// Boot diagnostic — last line of the script. If you see this in the console the
+// script reached the end without crashing; if you DON'T, something above threw
+// (watch for the "JS error:" line / alert). secure must be true for Web BT.
+log(`Boot ok — secure=${window.isSecureContext} ble=${"bluetooth" in navigator} `
+  + `serial=${"serial" in navigator} getDevices=${!!(navigator.bluetooth && navigator.bluetooth.getDevices)}`,
+  (window.isSecureContext && "bluetooth" in navigator) ? "ok" : "warn");
 </script>
 <div id="flashResult" class="flash-result" aria-hidden="true">
   <div class="fr-card" role="alertdialog">
