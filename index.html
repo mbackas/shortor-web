@@ -1416,7 +1416,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 41, date: "2026-06-27" };
+const APP_BUILD = { ver: 42, date: "2026-06-27" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -3390,7 +3390,7 @@ const TUN_META = {
   sbkl:   { label: "scroll backlash",       unit: "notch",  min: 0,   max: 5,    step: 0.1  },
   smax:   { label: "scroll cap",            unit: "/frame", min: 1,   max: 100,  step: 1    },
   usbhap: { label: "haptic on USB (bench)", unit: "",       min: 0,   max: 1,    step: 1    },
-  csat:   { label: "balance pos-err sat",   unit: "mm",     min: 0.5, max: 20,   step: 0.1  },
+  csat:   { label: "balance pos-err sat",   unit: "mm",     min: 0.5, max: 100,  step: 0.1  },
   ssms:   { label: "balance soft-start",    unit: "ms",     min: 0,   max: 600,  step: 10   },
   sukt:   { label: "stand-up kick time",    unit: "ms",     min: 0,   max: 500,  step: 10   },
   sukf:   { label: "stand-up kick torque",  unit: "×Vlim",  min: 0,   max: 1,    step: 0.05 },
