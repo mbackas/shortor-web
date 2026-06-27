@@ -1415,7 +1415,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 38, date: "2026-06-27" };
+const APP_BUILD = { ver: 39, date: "2026-06-27" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2057,6 +2057,22 @@ function drawSweepCharts() {
 
 const enc = new TextEncoder();
 
+// Bound a promise with a timeout. CoreBluetooth's connect (iOS / Bluefy) has
+// NO timeout of its own — gatt.connect() to a remembered-but-unreachable
+// peripheral hangs forever, which is why the silent reconnect looked like a
+// dead Connect button. onTimeout is the cancel hook (gatt.disconnect()).
+function withTimeout(promise, ms, onTimeout) {
+  if (!ms) return promise;
+  let to;
+  const timer = new Promise((_, rej) => {
+    to = setTimeout(() => {
+      if (onTimeout) { try { onTimeout(); } catch (_) {} }
+      rej(new Error(`timed out after ${(ms / 1000).toFixed(0)}s`));
+    }, ms);
+  });
+  return Promise.race([promise, timer]).finally(() => clearTimeout(to));
+}
+
 // ─── Transports ─────────────────────────────────────────────────────────────
 class BleTransport {
   constructor() {
@@ -2065,7 +2081,7 @@ class BleTransport {
     this._userDisconnected = false;   // true only when user clicked Disconnect
     this._reconnectAbort   = false;   // set to abort an in-flight reconnect loop
   }
-  async connect(existingDevice = null) {
+  async connect(existingDevice = null, opts = {}) {
     if (existingDevice) {
       // Reusing a previously-paired BluetoothDevice (from getDevices()) —
       // skips the chooser dialog so auto-reconnect on page load doesn't
@@ -2091,12 +2107,26 @@ class BleTransport {
       if (!this._userDisconnected) this._startReconnectLoop();
     };
     this.device.addEventListener("gattserverdisconnected", this._disconnectListener);
-    await this._gattConnect();
+    try {
+      await this._gattConnect(opts.timeoutMs || 0);
+    } catch (e) {
+      // Tear down so a cancelled/late connect can't fire _disconnectListener
+      // and spawn a reconnect loop on this dead transport.
+      this._userDisconnected = true;
+      if (this._disconnectListener) {
+        this.device.removeEventListener("gattserverdisconnected", this._disconnectListener);
+        this._disconnectListener = null;
+      }
+      try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch (_) {}
+      throw e;
+    }
     return this.device.name || "BLE";
   }
-  async _gattConnect() {
+  async _gattConnect(timeoutMs = 0) {
     this._connectedAt = performance.now();
-    const server = await this.device.gatt.connect();
+    const server = await withTimeout(
+      this.device.gatt.connect(), timeoutMs,
+      () => { try { this.device.gatt.disconnect(); } catch (_) {} });
     const svc    = await server.getPrimaryService(SVC_UUID);
     this.cmd     = await svc.getCharacteristic(CMD_UUID);
     try { this.params = await svc.getCharacteristic(PARAMS_UUID); }
@@ -2251,7 +2281,7 @@ class BleTransport {
       attempt++;
       log(`[RECONNECT] attempt ${attempt}…`, "warn");
       try {
-        await this._gattConnect();
+        await this._gattConnect(8000);   // bounded — iOS connect never times out on its own
         setStatus(true, this.device.name || "BLE");
         log(`[RECONNECT] back online after ${attempt} attempt(s).`, "ok");
         // Best-effort re-fetch params after a reconnect.
@@ -2604,6 +2634,10 @@ function petTelemetry() {
 // getDevices() inside the click would consume it (→ "must be handling a user
 // gesture" → dead button on the first connect).
 let _bleGranted = [];
+// Set after a silent (getDevices) reconnect fails so the NEXT Connect tap skips
+// the silent path and opens the chooser. Must be decided synchronously inside
+// the click — awaiting first would consume the user gesture requestDevice needs.
+let _forceChooser = false;
 async function refreshBleGranted() {
   try {
     if (navigator.bluetooth && typeof navigator.bluetooth.getDevices === "function") {
@@ -2633,12 +2667,21 @@ async function connectFlow() {
       // getDevices()-first (REQUIRED for macOS while the OS owns the HID link;
       // also silent on Windows). We read the CACHE synchronously here so the
       // requestDevice() fallback below still runs inside the click's gesture.
-      const known = pickKnownBle();
+      const known = _forceChooser ? null : pickKnownBle();
+      _forceChooser = false;
       if (known) {
         log(`Reconnecting to ${known.name || "the knob"} (no chooser)…`);
-        name = await transport.connect(known);
+        try {
+          // Bounded: on iOS/Bluefy gatt.connect() to a remembered peripheral
+          // that isn't advertising hangs forever (looks like a dead button).
+          name = await transport.connect(known, { timeoutMs: 6000 });
+        } catch (e) {
+          _forceChooser = true;   // next tap → chooser (synchronous, gesture-safe)
+          throw new Error("couldn't reach the knob silently (" + errMsg(e)
+            + "). Tap Connect again to pick it from the list.");
+        }
       } else {
-        log("First connect — opening the device chooser. On a Mac do this right after powering the knob on (before it pairs as a mouse), or Forget it in Bluetooth settings first; after one grant it reconnects silently.", "warn");
+        log("Opening the device chooser. On a Mac do this right after powering the knob on (before it pairs as a mouse), or Forget it in Bluetooth settings first; after one grant it reconnects silently.", "warn");
         name = await transport.connect();   // requestDevice() — gesture still live (no await before it)
         refreshBleGranted();                // remember the new grant for next time
       }
@@ -2731,7 +2774,7 @@ async function tryAutoReconnect() {
       try {
         log(`Auto-reconnecting to ${d.name || d.id} (try ${attempt + 1}/3)…`, "warn");
         const xport = new BleTransport();
-        const name = await xport.connect(d);
+        const name = await xport.connect(d, { timeoutMs: 6000 });
         transport = xport;
         setStatus(true, name);
         log("Auto-reconnected.", "ok");
