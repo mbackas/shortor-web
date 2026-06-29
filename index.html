@@ -1313,6 +1313,7 @@
       <div id="acroBody" hidden>
         <div class="row" style="margin-bottom: 8px;">
           <span id="acroSysPill" class="pill" title="Confirms the plant switch — reads ACRO once firmware is in acrobot mode ([SYS] mode word)">plant —</span>
+          <span id="acroStatePill" class="pill" title="Controller task state (st): off = disarmed, swing-up = pumping energy in, balancing = holding at the top">task: —</span>
           <span id="acroHangPill" class="pill bad" title="Hanging-zero datum — run Calibrate hanging zero before the angles can be trusted">HANG NOT SET</span>
           <span id="acroQ1" class="pill live" title="Shoulder-link coord q1 = q2 − shaft (derived: IMU angle minus elbow encoder) — 0 at hang">q1 = —</span>
           <span id="acroW1" class="pill live" title="Shoulder-link angular rate (°/s)">w1 = —</span>
@@ -1325,6 +1326,26 @@
         </div>
         <div class="stat" style="margin-top: 6px;">pose — shoulder (amber) · elbow (blue); dashed = hang &amp; upright</div>
         <canvas id="acroCanvas" height="260"></canvas>
+
+        <!-- ARM gate (acarm) — bespoke, confirm-guarded control. This is the live
+             "go" switch: arming lets the firmware drive the motor to swing up and
+             balance. Kept out of the generic [TUN] panel (TUN_HIDDEN) so there is
+             exactly one, confirm-protected arm control. LQR gains / signs stay in
+             the generic Tuning panel. -->
+        <div class="acro-arm" style="margin-top: 12px;">
+          <div class="row" style="gap: 10px; align-items: center;">
+            <label class="toggle needs-conn">
+              <input type="checkbox" id="acroArm">
+              <span>ARM controller (swing-up → balance)</span>
+            </label>
+            <span id="acroArmPill" class="pill" title="Controller arm gate (acarm). DISARMED = zero torque (safe); ARMED = motor actuates.">DISARMED</span>
+          </div>
+          <p class="help" style="margin: 6px 0 0;">
+            Arming lets the robot <b>actuate</b> — it pumps up and tries to balance.
+            Keep hands clear and hold the rig. Verify <code>q1/q2</code> signs and the
+            LQR gains (in <b>Tuning</b>) before arming.
+          </p>
+        </div>
       </div>
     </div>
   </details>
@@ -1457,7 +1478,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 47, date: "2026-06-29" };
+const APP_BUILD = { ver: 48, date: "2026-06-29" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2289,7 +2310,8 @@ class BleTransport {
         // figure. Suppress the console echo (4 Hz would spam it).
         if (text && /^\[ACRO\]/i.test(text)) {
           const num = k => { const m = text.match(new RegExp(k + "=(-?[\\d.]+)")); return m ? parseFloat(m[1]) : 0; };
-          onAcro(num("hang"), num("q1"), num("w1"), num("q2"), num("w2"));
+          const stM = text.match(/\bst=(\w+)/);
+          onAcro(num("hang"), num("q1"), num("w1"), num("q2"), num("w2"), stM ? stM[1] : null);
           return;
         }
         // [SWP] … probe-sweep lines (begin / data row / captured / paired / saved).
@@ -3457,7 +3479,22 @@ const TUN_META = {
   ffg:    { label: "free-fall entry thr",   unit: "g",      min: 0.1, max: 0.5,  step: 0.01 },
   ffms:   { label: "free-fall entry sustain",unit: "ms",    min: 20,  max: 150,  step: 5    },
   ffwv:   { label: "free-fall wheel cap",   unit: "rev/s",  min: 2,   max: 20,   step: 0.5  },
+  // Acrobot controller (plant=1). Bounded params get a ranged slider; the LQR
+  // gains + pump have unknown hand-tuned magnitudes, so they're label-only number
+  // inputs (TUN_LABELS) that never clamp. acarm is hidden (bespoke ARM toggle).
+  accatch:{ label: "acro swing→balance catch", unit: "rad", min: 0.1, max: 1.0,  step: 0.01 },
+  acsgn:  { label: "acro angle sign",       unit: "",       min: -1,  max: 1,    step: 2    },
+  acssh:  { label: "acro shaft sign",       unit: "",       min: -1,  max: 1,    step: 2    },
 };
+// Friendly labels for params that must stay free number inputs (unknown/hand-
+// tuned magnitudes — a wrong slider range would clamp them).
+const TUN_LABELS = {
+  ak0: "acro LQR q1", ak1: "acro LQR q1̇", ak2: "acro LQR q2", ak3: "acro LQR q2̇",
+  acpump: "acro swing-up pump",
+};
+// Params with a bespoke control elsewhere — tracked in tunState but NOT given a
+// generic row. acarm has the confirm-guarded ARM toggle in the Acrobot card.
+const TUN_HIDDEN = new Set(["acarm"]);
 // [TUN] carries no type metadata, so booleans are a UI-side known set — rendered
 // as a toggle that sends 1/0 instead of a slider. (Per FW: only usbhap today.)
 const TUN_BOOL = new Set(["usbhap"]);
@@ -3468,6 +3505,9 @@ const tunEls   = {};   // name → { input, valEl, meta }
 function setTunParam(name, val) {
   if (Number.isNaN(val)) return;
   tunState[name] = val;
+  // Bespoke-control params (e.g. acarm) are tracked but get no generic row;
+  // forward the wire value to their dedicated handler instead.
+  if (TUN_HIDDEN.has(name)) { if (name === "acarm") syncAcroArm(val); return; }
   let rec = tunEls[name];
   if (!rec) {
     const wrap = document.getElementById("tunRegistry");
@@ -3475,7 +3515,7 @@ function setTunParam(name, val) {
     const meta = TUN_META[name] || null;
     const row = document.createElement("div"); row.className = "slider-row";
     const lbl = document.createElement("label");
-    lbl.textContent = meta ? meta.label : name;
+    lbl.textContent = meta ? meta.label : (TUN_LABELS[name] || name);
     lbl.title = name + (meta && meta.unit ? ` — ${meta.unit}` : "");
     const valEl = document.createElement("span"); valEl.className = "value";
     row.appendChild(lbl); row.appendChild(valEl);
@@ -4505,7 +4545,7 @@ function setAcroActive(on) {
   if (on && !acroRaf) acroRaf = requestAnimationFrame(drawAcro);   // canvas just un-hid
 }
 
-function onAcro(hang, q1, w1, q2, w2) {
+function onAcro(hang, q1, w1, q2, w2, st) {
   acroState.hang = hang|0; acroState.q1 = q1; acroState.q2 = q2; acroState.valid = true;
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
   const d1  = v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}`;
@@ -4518,7 +4558,35 @@ function onAcro(hang, q1, w1, q2, w2) {
     if (hang) { hp.textContent = "hang set"; hp.className = "pill ok"; }
     else      { hp.textContent = "HANG NOT SET"; hp.className = "pill bad"; }
   }
+  if (st) setAcroState(st);
   if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
+}
+
+// Task-state indicator from the [ACRO] st= field.
+function setAcroState(st) {
+  const pill = document.getElementById("acroStatePill");
+  if (!pill) return;
+  const map = {
+    off:   ["task: off",        "pill"],
+    swing: ["task: swing-up",   "pill warn"],
+    bal:   ["task: balancing",  "pill ok"],
+  };
+  const [txt, cls] = map[st] || [`task: ${st}`, "pill"];
+  pill.textContent = txt; pill.className = cls;
+}
+
+// ARM gate (acarm). DISARMED = neutral; ARMED = amber (live/energized).
+function setAcroArmPill(armed) {
+  const pill = document.getElementById("acroArmPill");
+  if (pill) { pill.textContent = armed ? "ARMED" : "DISARMED"; pill.className = armed ? "pill warn" : "pill"; }
+}
+// Authoritative sync from a [TUN] acarm= echo — reconciles the toggle + pill
+// without re-sending (unless the user is mid-interaction with the checkbox).
+function syncAcroArm(val) {
+  const armed = (val != 0);
+  const cb = document.getElementById("acroArm");
+  if (cb && document.activeElement !== cb) cb.checked = armed;
+  setAcroArmPill(armed);
 }
 
 function resetAcro() {
@@ -4530,6 +4598,11 @@ function resetAcro() {
   if (hp) { hp.textContent = "HANG NOT SET"; hp.className = "pill bad"; }
   const sp = document.getElementById("acroSysPill");
   if (sp) { sp.textContent = "plant —"; sp.className = "pill"; }
+  const stp = document.getElementById("acroStatePill");
+  if (stp) { stp.textContent = "task: —"; stp.className = "pill"; }
+  const arm = document.getElementById("acroArm");
+  if (arm) arm.checked = false;
+  setAcroArmPill(false);   // don't imply armed on a dead link; [TUN] re-syncs on reconnect
   if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
 }
 
@@ -4604,6 +4677,27 @@ if (btnAcroHang) btnAcroHang.onclick = async () => {
   if (!transport || !transport.isConnected()) return log("Not connected.", "bad");
   try { await transport.writeCmd("GH\n"); log("Calibrating hanging zero — hold the bot hanging straight down…", "ok"); }
   catch (e) { log("Hang cal failed: " + errMsg(e), "bad"); }
+};
+
+// ARM gate — bespoke, confirm-guarded acarm toggle. Queues `Cu acarm=1/0` through
+// the same send pump as the generic [TUN] controls; the [TUN] echo reconciles via
+// syncAcroArm(). Confirm only on ARM (the actuate direction); disarm is always free.
+const acroArmEl = document.getElementById("acroArm");
+if (acroArmEl) acroArmEl.onchange = (e) => {
+  const on = e.target.checked;
+  if (!transport || !transport.isConnected()) {
+    e.target.checked = !on;
+    return log("Not connected.", "bad");
+  }
+  if (on && !confirm("ARM the acrobot controller?\n\nThe robot will drive the motor to swing up and balance. Keep hands clear and hold the rig steady.")) {
+    e.target.checked = false;
+    return;
+  }
+  tunState.acarm = on ? 1 : 0;   // UI-authoritative; pump sends, echo reconciles
+  pendingSends["__tun_acarm"] = { kind: "Cu", name: "acarm", val: on ? 1 : 0 };
+  setAcroArmPill(on);
+  log(on ? "ARMED — acrobot controller running (swing-up → balance). Hold the rig."
+         : "DISARMED — acrobot holds zero torque.", on ? "warn" : "ok");
 };
 
 const secAcroEl = document.getElementById("secAcro");

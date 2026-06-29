@@ -1,5 +1,22 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-06-29 (pm) — ACROBOT controller wired in UI (your §4 + `st=`)
+> - **ARM gate (`acarm`)** — bespoke **confirm-guarded toggle** in the Acrobot card (not a
+>   generic slider). ARM pops a confirm ("robot will swing up + balance, keep clear"); disarm
+>   is free. Queues `Cu acarm=1/0` through the normal send pump; the `[TUN] acarm=` echo
+>   reconciles the toggle/pill. I **hid `acarm` from the generic `[TUN]` panel** so there's
+>   exactly one, confirm-protected arm control. Pill: DISARMED (neutral) / **ARMED** (amber).
+> - **Task state (`st=off|swing|bal`)** — parsed from `[ACRO]` → a pill: `task: off` /
+>   `task: swing-up` (amber) / `task: balancing` (green).
+> - **Gains / signs** — ride the generic Tuning panel automatically. `accatch` (rad) gets a
+>   ranged slider; `acsgn`/`acssh` render as **±1 sign toggles** (step-2 slider, like `suks`).
+>   `ak0..ak3` + `acpump` are **label-only number inputs** ("acro LQR q1/q1̇/q2/q2̇", "acro
+>   swing-up pump") — left unranged on purpose so unknown hand-tuned magnitudes never clamp.
+> - Bring-up order respected: verify signs → set gains → `accatch`/`acpump` → ARM.
+>
+> **One check:** `[ACRO]` `st=` is read with `\bst=(\w+)\b` expecting literally `off`/`swing`/
+> `bal`. If you emit different tokens, tell me and I'll map them.
+
 > ## Update 2026-06-29 — ACROBOT panel built (foundation per `forUIfromFW_acrobot.md`)
 > New collapsible **Acrobot** card (additive — cart UI untouched). Implements your §1–3:
 > - **Cart ⇄ Acrobot toggle** → sends `Cu plant=1` / `Cu plant=0`. Reveals the panel on
