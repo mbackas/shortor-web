@@ -1,5 +1,16 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-06-29 (late) — q2 convention flipped to from-UPRIGHT (your §2 edit)
+> Adopted your new `q2` definition: **0 = upright, ±180 = hanging, cal/hang pose = 180°**
+> (`q1` unchanged: 0 at hang). Stick figure now offsets the IMU link by **+180°** so the pose
+> still renders correctly (hang = both links down, upright = both up) while keeping +CCW.
+> q2 gauge tooltip updated.
+>
+> **⚠ Doc contradiction — please fix one:** your §2 line now says q2 = 180° at the hang/cal pose,
+> but §3 step 2 still reads *"press Calibrate hanging zero → … q2≈0."* I went with the §2/§3-step-3
+> convention (q2≈180 at hang, 0 at upright). If §3 step 2's "q2≈0" is actually correct, ping me
+> and I'll drop the +180° offset.
+
 > ## Update 2026-06-29 (pm) — ACROBOT controller wired in UI (your §4 + `st=`)
 > - **ARM gate (`acarm`)** — bespoke **confirm-guarded toggle** in the Acrobot card (not a
 >   generic slider). ARM pops a confirm ("robot will swing up + balance, keep clear"); disarm

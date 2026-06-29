@@ -1317,7 +1317,7 @@
           <span id="acroHangPill" class="pill bad" title="Hanging-zero datum — run Calibrate hanging zero before the angles can be trusted">HANG NOT SET</span>
           <span id="acroQ1" class="pill live" title="Shoulder-link coord q1 = q2 − shaft (derived: IMU angle minus elbow encoder) — 0 at hang">q1 = —</span>
           <span id="acroW1" class="pill live" title="Shoulder-link angular rate (°/s)">w1 = —</span>
-          <span id="acroQ2" class="pill live" title="IMU-link absolute angle from the hang datum — 0 hanging, ±180 inverted/upright">q2 = —</span>
+          <span id="acroQ2" class="pill live" title="IMU-link angle measured from UPRIGHT — 0 upright, ±180 hanging (cal/hang pose = 180°)">q2 = —</span>
           <span id="acroW2" class="pill live" title="IMU-link angular rate (°/s)">w2 = —</span>
         </div>
         <div class="row" style="margin-bottom: 8px;">
@@ -1478,7 +1478,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 48, date: "2026-06-29" };
+const APP_BUILD = { ver: 49, date: "2026-06-29" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -4606,11 +4606,11 @@ function resetAcro() {
   if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
 }
 
-// 2-link stick figure. Both q1 (shoulder/proximal link) and q2 (IMU/distal
-// link) are ABSOLUTE angles from the hang datum (0 = hanging down, ±180 =
-// inverted/upright), so each link's world angle is used directly. Screen y is
-// down, so end = (sin θ, cos θ): θ=0 → straight down, and increasing θ rotates
-// the link counter-clockwise on screen — matching the firmware's +CCW sign.
+// 2-link stick figure. q1 (shoulder/proximal link) is measured from HANG
+// (0 = hanging down, ±180 = up); q2 (IMU/distal link) is measured from UPRIGHT
+// (0 = up, ±180 = hang, cal pose = 180°). Screen y is down, so end =
+// (sin θ, cos θ): θ=0 → straight down, increasing θ rotates the link CCW on
+// screen — matching firmware +CCW. q2 gets a +180° offset to share q1's frame.
 function drawAcro() {
   acroRaf = 0;
   if (!acroCanvas) return;
@@ -4635,8 +4635,8 @@ function drawAcro() {
     ctx.fillText("waiting for [ACRO] stream…", cx, cy);
     return;
   }
-  const phi1 = acroState.q1 * Math.PI / 180;   // shoulder link, absolute
-  const phi2 = acroState.q2 * Math.PI / 180;   // IMU link, absolute
+  const phi1 =  acroState.q1        * Math.PI / 180;   // shoulder link, from hang (0 = down)
+  const phi2 = (acroState.q2 + 180) * Math.PI / 180;   // IMU link, from upright (+180 → hang frame)
   const e1 = { x: cx + L1 * Math.sin(phi1), y: cy + L1 * Math.cos(phi1) };
   const e2 = { x: e1.x + L2 * Math.sin(phi2), y: e1.y + L2 * Math.cos(phi2) };
   ctx.lineCap = "round";
