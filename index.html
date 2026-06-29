@@ -1319,6 +1319,7 @@
       <div class="row" style="margin-bottom: 8px;">
         <span id="liveTorque" class="pill live">τ = —</span>
         <span id="liveTilt" class="pill live">tilt = —</span>
+        <span id="liveTiltRate" class="pill live" title="Tilt angular rate (tilt_dot) in °/s">tilt' = —</span>
         <span id="liveTap" class="pill live">taps 0/0</span>
         <span id="liveFFWake" class="pill live">ff/wk 0/0</span>
         <span id="liveLoopHz" class="pill live" title="Actual control-loop rate, reported once/sec by the chip">— Hz</span>
@@ -1327,7 +1328,10 @@
         <span id="deviceInfo" class="pill"></span>
         <span id="fwBuildPill" class="pill" title="Firmware build tag (HHMM the .bin was compiled)">fw —</span>
       </div>
+      <div class="stat" style="margin-top: 6px;">torque cmd (V)</div>
       <canvas id="torqueCanvas" height="170"></canvas>
+      <div class="stat" style="margin-top: 6px;">tilt rate (°/s)</div>
+      <canvas id="tiltRateCanvas" height="170"></canvas>
       <pre id="console" style="margin-top: 8px;"></pre>
       <div class="row" style="margin-top: 8px;">
         <button id="btnWinding" class="needs-conn">Winding test</button>
@@ -1416,7 +1420,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 42, date: "2026-06-27" };
+const APP_BUILD = { ver: 43, date: "2026-06-28" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2163,9 +2167,11 @@ class BleTransport {
         }
         if (dv.byteLength >= 24) {
           const tilt = dv.getFloat32(12, true);
+          const tiltDot = dv.getFloat32(16, true);   // [4] tilt_dot (rad/s)
           const mode = Math.round(dv.getFloat32(20, true));
           const tEl = document.getElementById("liveTilt");
           if (tEl) tEl.textContent = `tilt = ${(tilt * 180 / Math.PI).toFixed(1)}°`;
+          onTiltRate(tiltDot);
           updateModePill(mode);
           balanceLive.tilt = tilt;
           balanceLive.mode = mode;
@@ -2569,6 +2575,7 @@ function setStatus(ok, name) {
     // telemetry frozen on screen looking live.
     const blanks = {
       liveVoltage: "V = —", liveTorque: "τ = —", liveTilt: "tilt = —",
+      liveTiltRate: "tilt' = —",
       liveTap: "taps —/—", liveFFWake: "ff/wk —/—", liveLoopHz: "— Hz",
       fwBuildPill: "fw —",
     };
@@ -4293,7 +4300,7 @@ function drawAxes(ctx, w, h, dpr, yRange, yUnit, xSpanSec) {
     if (yv === 0) { ctx.setLineDash([2, 4]); ctx.strokeStyle = "#2a3940"; }
     else          { ctx.setLineDash([]);       ctx.strokeStyle = "#16242a"; }
     ctx.stroke();
-    ctx.fillText(`${yv >= 0 ? "+" : ""}${yv.toFixed(yUnit === "°" ? 0 : 1)}${yUnit}`,
+    ctx.fillText(`${yv >= 0 ? "+" : ""}${yv.toFixed((yUnit === "°" || yUnit === "°/s") ? 0 : 1)}${yUnit}`,
                  plotX - 4 * dpr, yp);
   }
   ctx.setLineDash([]);
@@ -4332,6 +4339,55 @@ function drawTorque() {
 }
 new ResizeObserver(drawTorque).observe(torqueCanvas);
 drawTorque();
+
+// ─── Live tilt-rate rolling plot ───────────────────────────────────────────
+// tilt_dot from telemetry [4] (rad/s), plotted in °/s. Y-range auto-scales to
+// fit recent motion with a floor, so gentle balance jitter and a full topple
+// both read clearly on the same axis.
+const tiltRateCanvas = document.getElementById("tiltRateCanvas");
+const liveTiltRateEl = document.getElementById("liveTiltRate");
+const tiltRateBuf    = new Float32Array(PLOT_LEN);   // stored in °/s
+let   tiltRateIdx    = 0;
+let   tiltRateRaf    = 0;
+const TILTRATE_YR_FLOOR = 60;   // °/s — minimum half-range
+
+function niceCeil(v) {
+  if (!(v > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  const s = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+  return s * p;
+}
+function onTiltRate(radPerS) {
+  const degPerS = radPerS * 180 / Math.PI;
+  tiltRateBuf[tiltRateIdx] = degPerS;
+  tiltRateIdx = (tiltRateIdx + 1) % PLOT_LEN;
+  if (liveTiltRateEl)
+    liveTiltRateEl.textContent = `tilt' = ${degPerS >= 0 ? "+" : ""}${degPerS.toFixed(1)} °/s`;
+  if (!tiltRateRaf) tiltRateRaf = requestAnimationFrame(drawTiltRate);
+}
+function drawTiltRate() {
+  tiltRateRaf = 0;
+  const ctx = tiltRateCanvas.getContext("2d");
+  const dpr = devicePixelRatio || 1;
+  const w = tiltRateCanvas.width  = tiltRateCanvas.clientWidth  * dpr;
+  const h = tiltRateCanvas.height = tiltRateCanvas.clientHeight * dpr;
+  let maxAbs = 0;
+  for (let i = 0; i < PLOT_LEN; i++) { const a = Math.abs(tiltRateBuf[i]); if (a > maxAbs) maxAbs = a; }
+  const yr = Math.max(TILTRATE_YR_FLOOR, niceCeil(maxAbs));
+  const ax = drawAxes(ctx, w, h, dpr, [-yr, yr], "°/s", 20);
+  ctx.strokeStyle = "#7aa2ff"; ctx.lineWidth = 1 * dpr;
+  ctx.beginPath();
+  for (let i = 0; i < PLOT_LEN; i++) {
+    const idx = (tiltRateIdx + i) % PLOT_LEN;
+    const x = ax.plotX + (i * ax.plotW) / (PLOT_LEN - 1);
+    const y = ax.yToPx(tiltRateBuf[idx]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+new ResizeObserver(drawTiltRate).observe(tiltRateCanvas);
+drawTiltRate();
 
 // ─── Tilt-bias rolling plot ────────────────────────────────────────────────
 // Shows g_tilt_bias from the BLE telemetry as it converges. Y-axis fits
@@ -4387,7 +4443,7 @@ if (secBalanceEl) secBalanceEl.addEventListener("toggle", () => {
 });
 const secDiagEl = document.getElementById("secDiag");
 if (secDiagEl) secDiagEl.addEventListener("toggle", () => {
-  if (secDiagEl.open) drawTorque();
+  if (secDiagEl.open) { drawTorque(); drawTiltRate(); }
 });
 
 // ─── Boot banner ────────────────────────────────────────────────────────────
