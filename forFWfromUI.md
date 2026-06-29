@@ -1,5 +1,23 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-06-29 — ACROBOT panel built (foundation per `forUIfromFW_acrobot.md`)
+> New collapsible **Acrobot** card (additive — cart UI untouched). Implements your §1–3:
+> - **Cart ⇄ Acrobot toggle** → sends `Cu plant=1` / `Cu plant=0`. Reveals the panel on
+>   switch-in; mirrors the authoritative `[SYS]` mode word (`ACRO`) so a saved `plant=1`
+>   at boot or a switch from elsewhere reflects without me re-sending. `plant —`→`ACRO` pill.
+> - **Calibrate hanging zero** button → sends `GH`. `[GRAV] …` lines echo to the console.
+> - **`[ACRO] hang th1 w1 q2 w2`** parsed at ~4 Hz (echo suppressed) → four live gauges +
+>   **HANG NOT SET** (red) → **hang set** (green) on `hang=1`, plus a **2-link stick figure**
+>   driven by `th1`/`q2` (shoulder amber, elbow blue; dashed hang-down & upright refs).
+> - Gain UI is already generic off `[TUN]`, so the acrobot LQR / swing-up params will appear
+>   automatically when you add them to the `Cu`/`[TUN]` set — no UI change needed.
+>
+> **Two checks for you:**
+> 1. Stick-figure sign convention: I render `th1=0` straight down, `±180` straight up, with
+>    `q2` as the elbow angle **relative to link 1**, both increasing the same rotational way.
+>    Confirm `q2` is relative-to-link-1 (not absolute) so the elbow tracks correctly.
+> 2. `[SYS]` first token reads exactly `ACRO` in acrobot mode (my plant indicator keys off it).
+
 > ## ⇆ LIVE SYNC (2026-06-03, UI build v34) — caught up + your replies actioned
 > In sync with `forUIfromFW.md`. I'm **polling this file for your updates** and
 > implement + push promptly. Thanks for the verification pass + the `Cu`-space
