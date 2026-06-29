@@ -1314,10 +1314,10 @@
         <div class="row" style="margin-bottom: 8px;">
           <span id="acroSysPill" class="pill" title="Confirms the plant switch — reads ACRO once firmware is in acrobot mode ([SYS] mode word)">plant —</span>
           <span id="acroHangPill" class="pill bad" title="Hanging-zero datum — run Calibrate hanging zero before the angles can be trusted">HANG NOT SET</span>
-          <span id="acroTh1" class="pill live" title="Shoulder/IMU-link absolute angle from the hang datum — 0 hanging, ±180 inverted/upright">th1 = —</span>
+          <span id="acroQ1" class="pill live" title="Shoulder-link coord q1 = q2 − shaft (derived: IMU angle minus elbow encoder) — 0 at hang">q1 = —</span>
           <span id="acroW1" class="pill live" title="Shoulder-link angular rate (°/s)">w1 = —</span>
-          <span id="acroQ2" class="pill live" title="Elbow (encoder) angle, zeroed at the hang pose (°)">q2 = —</span>
-          <span id="acroW2" class="pill live" title="Elbow angular rate (°/s)">w2 = —</span>
+          <span id="acroQ2" class="pill live" title="IMU-link absolute angle from the hang datum — 0 hanging, ±180 inverted/upright">q2 = —</span>
+          <span id="acroW2" class="pill live" title="IMU-link angular rate (°/s)">w2 = —</span>
         </div>
         <div class="row" style="margin-bottom: 8px;">
           <button id="btnAcroHang" class="primary needs-conn" title="Hang the robot straight down, then press — firmware window-averages the accel and stores the hang datum + latches the elbow-encoder zero (GH). Auto-saves.">Calibrate hanging zero</button>
@@ -1457,7 +1457,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 46, date: "2026-06-29" };
+const APP_BUILD = { ver: 47, date: "2026-06-29" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2284,12 +2284,12 @@ class BleTransport {
           setDampedState(/\bDAMPED\b/i.test(text));
           // fall through so the transition still echoes to the console
         }
-        // [ACRO] hang=<0|1> th1=<deg> w1=<deg/s> q2=<deg> w2=<deg/s> — ~4 Hz
+        // [ACRO] hang=<0|1> q1=<deg> w1=<deg/s> q2=<deg> w2=<deg/s> — ~4 Hz
         // acrobot state-estimate readout (plant=1). Drives the gauges + stick
         // figure. Suppress the console echo (4 Hz would spam it).
         if (text && /^\[ACRO\]/i.test(text)) {
           const num = k => { const m = text.match(new RegExp(k + "=(-?[\\d.]+)")); return m ? parseFloat(m[1]) : 0; };
-          onAcro(num("hang"), num("th1"), num("w1"), num("q2"), num("w2"));
+          onAcro(num("hang"), num("q1"), num("w1"), num("q2"), num("w2"));
           return;
         }
         // [SWP] … probe-sweep lines (begin / data row / captured / paired / saved).
@@ -4491,7 +4491,7 @@ drawBias();
 // the estimator. See forUIfromFW_acrobot.md.
 const acroCanvas = document.getElementById("acroCanvas");
 let   acroRaf    = 0;
-const acroState  = { th1: 0, q2: 0, hang: 0, valid: false };
+const acroState  = { q1: 0, q2: 0, hang: 0, valid: false };
 
 // Reflect the plant state in the UI WITHOUT re-sending a command — called both
 // from the user toggle and from the authoritative [SYS] mode word.
@@ -4505,11 +4505,11 @@ function setAcroActive(on) {
   if (on && !acroRaf) acroRaf = requestAnimationFrame(drawAcro);   // canvas just un-hid
 }
 
-function onAcro(hang, th1, w1, q2, w2) {
-  acroState.hang = hang|0; acroState.th1 = th1; acroState.q2 = q2; acroState.valid = true;
+function onAcro(hang, q1, w1, q2, w2) {
+  acroState.hang = hang|0; acroState.q1 = q1; acroState.q2 = q2; acroState.valid = true;
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
   const d1  = v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}`;
-  set("acroTh1", `th1 = ${d1(th1)}°`);
+  set("acroQ1",  `q1 = ${d1(q1)}°`);
   set("acroW1",  `w1 = ${d1(w1)}°/s`);
   set("acroQ2",  `q2 = ${d1(q2)}°`);
   set("acroW2",  `w2 = ${d1(w2)}°/s`);
@@ -4522,9 +4522,9 @@ function onAcro(hang, th1, w1, q2, w2) {
 }
 
 function resetAcro() {
-  acroState.valid = false; acroState.th1 = 0; acroState.q2 = 0; acroState.hang = 0;
+  acroState.valid = false; acroState.q1 = 0; acroState.q2 = 0; acroState.hang = 0;
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-  set("acroTh1", "th1 = —"); set("acroW1", "w1 = —");
+  set("acroQ1",  "q1 = —"); set("acroW1", "w1 = —");
   set("acroQ2",  "q2 = —");  set("acroW2", "w2 = —");
   const hp = document.getElementById("acroHangPill");
   if (hp) { hp.textContent = "HANG NOT SET"; hp.className = "pill bad"; }
@@ -4533,9 +4533,11 @@ function resetAcro() {
   if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
 }
 
-// 2-link stick figure. th1 = shoulder-link absolute angle from the hang datum
-// (0 = hanging down, ±180 = inverted/upright); q2 = elbow angle relative to
-// link 1. Screen y is down, so "hanging down" = (sin θ, cos θ) with θ=0 → +y.
+// 2-link stick figure. Both q1 (shoulder/proximal link) and q2 (IMU/distal
+// link) are ABSOLUTE angles from the hang datum (0 = hanging down, ±180 =
+// inverted/upright), so each link's world angle is used directly. Screen y is
+// down, so end = (sin θ, cos θ): θ=0 → straight down, and increasing θ rotates
+// the link counter-clockwise on screen — matching the firmware's +CCW sign.
 function drawAcro() {
   acroRaf = 0;
   if (!acroCanvas) return;
@@ -4560,8 +4562,8 @@ function drawAcro() {
     ctx.fillText("waiting for [ACRO] stream…", cx, cy);
     return;
   }
-  const phi1 = acroState.th1 * Math.PI / 180;
-  const phi2 = (acroState.th1 + acroState.q2) * Math.PI / 180;
+  const phi1 = acroState.q1 * Math.PI / 180;   // shoulder link, absolute
+  const phi2 = acroState.q2 * Math.PI / 180;   // IMU link, absolute
   const e1 = { x: cx + L1 * Math.sin(phi1), y: cy + L1 * Math.cos(phi1) };
   const e2 = { x: e1.x + L2 * Math.sin(phi2), y: e1.y + L2 * Math.cos(phi2) };
   ctx.lineCap = "round";

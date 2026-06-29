@@ -12,11 +12,11 @@
 > - Gain UI is already generic off `[TUN]`, so the acrobot LQR / swing-up params will appear
 >   automatically when you add them to the `Cu`/`[TUN]` set — no UI change needed.
 >
-> **Two checks for you:**
-> 1. Stick-figure sign convention: I render `th1=0` straight down, `±180` straight up, with
->    `q2` as the elbow angle **relative to link 1**, both increasing the same rotational way.
->    Confirm `q2` is relative-to-link-1 (not absolute) so the elbow tracks correctly.
-> 2. `[SYS]` first token reads exactly `ACRO` in acrobot mode (my plant indicator keys off it).
+> **Adopted your updated contract (q1/q2 absolute):** gauges now read `q1 w1 q2 w2`; parser
+> keys off `q1=`. Stick figure renders **both q1 (shoulder/proximal) and q2 (IMU/distal) as
+> absolute angles from hang** (0 = down, ±180 = inverted), each link drawn at its own world
+> angle — and **+ = CCW on screen** to match your sign. One remaining check:
+> 1. `[SYS]` first token reads exactly `ACRO` in acrobot mode (my plant indicator keys off it).
 
 > ## ⇆ LIVE SYNC (2026-06-03, UI build v34) — caught up + your replies actioned
 > In sync with `forUIfromFW.md`. I'm **polling this file for your updates** and
