@@ -1315,7 +1315,7 @@
           <span id="acroSysPill" class="pill" title="Confirms the plant switch — reads ACRO once firmware is in acrobot mode ([SYS] mode word)">plant —</span>
           <span id="acroStatePill" class="pill" title="Controller task state (st): off = disarmed, swing-up = pumping energy in, balancing = holding at the top">task: —</span>
           <span id="acroHangPill" class="pill bad" title="Hanging-zero datum — run Calibrate hanging zero before the angles can be trusted">HANG NOT SET</span>
-          <span id="acroQ1" class="pill live" title="Shoulder-link coord q1 = q2 − shaft (derived: IMU angle minus elbow encoder) — 0 at hang">q1 = —</span>
+          <span id="acroQ1" class="pill live" title="Shoulder-link angle, UI-derived as q1 = q2 + sh (shaft), measured from UPRIGHT — 0 upright, ±180 hanging (= q2 when elbow is straight)">q1 = —</span>
           <span id="acroW1" class="pill live" title="Shoulder-link angular rate (°/s)">w1 = —</span>
           <span id="acroQ2" class="pill live" title="IMU-link angle measured from UPRIGHT — 0 upright, ±180 hanging (cal/hang pose = 180°)">q2 = —</span>
           <span id="acroW2" class="pill live" title="IMU-link angular rate (°/s)">w2 = —</span>
@@ -1478,7 +1478,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 49, date: "2026-06-29" };
+const APP_BUILD = { ver: 50, date: "2026-06-29" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2305,13 +2305,16 @@ class BleTransport {
           setDampedState(/\bDAMPED\b/i.test(text));
           // fall through so the transition still echoes to the console
         }
-        // [ACRO] hang=<0|1> q1=<deg> w1=<deg/s> q2=<deg> w2=<deg/s> — ~4 Hz
-        // acrobot state-estimate readout (plant=1). Drives the gauges + stick
-        // figure. Suppress the console echo (4 Hz would spam it).
+        // [ACRO] hang=<0|1> st=<off|swing|bal> q2=<deg> w2=<deg/s> sh=<deg> wsh=<deg/s>
+        // — ~4 Hz acrobot readout (plant=1). Firmware sends RAW primitives now
+        // (2nd-link q2 from upright + shaft sh, zeroed at hang); the UI DERIVES
+        // the 1st-link angle q1 = q2 + sh (and w1 = w2 + wsh), both from-upright.
+        // \b on the key so num("sh") can't match inside "wsh=". Echo suppressed.
         if (text && /^\[ACRO\]/i.test(text)) {
-          const num = k => { const m = text.match(new RegExp(k + "=(-?[\\d.]+)")); return m ? parseFloat(m[1]) : 0; };
+          const num = k => { const m = text.match(new RegExp("\\b" + k + "=(-?[\\d.]+)")); return m ? parseFloat(m[1]) : 0; };
           const stM = text.match(/\bst=(\w+)/);
-          onAcro(num("hang"), num("q1"), num("w1"), num("q2"), num("w2"), stM ? stM[1] : null);
+          const q2 = num("q2"), w2 = num("w2"), sh = num("sh"), wsh = num("wsh");
+          onAcro(num("hang"), q2 + sh, w2 + wsh, q2, w2, stM ? stM[1] : null);
           return;
         }
         // [SWP] … probe-sweep lines (begin / data row / captured / paired / saved).
@@ -4606,11 +4609,11 @@ function resetAcro() {
   if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
 }
 
-// 2-link stick figure. q1 (shoulder/proximal link) is measured from HANG
-// (0 = hanging down, ±180 = up); q2 (IMU/distal link) is measured from UPRIGHT
-// (0 = up, ±180 = hang, cal pose = 180°). Screen y is down, so end =
-// (sin θ, cos θ): θ=0 → straight down, increasing θ rotates the link CCW on
-// screen — matching firmware +CCW. q2 gets a +180° offset to share q1's frame.
+// 2-link stick figure. BOTH q1 (shoulder/proximal) and q2 (IMU/distal) are
+// measured from UPRIGHT (0 = up, ±180 = hang; cal pose = 180°). Screen y is
+// down, so end = (sin θ, cos θ) maps θ=0 → straight down; both links get a
+// +180° offset so q=0 (upright) points up and q=180 (hang) points down, with
+// increasing θ rotating the link CCW on screen — matching firmware +CCW.
 function drawAcro() {
   acroRaf = 0;
   if (!acroCanvas) return;
@@ -4635,8 +4638,8 @@ function drawAcro() {
     ctx.fillText("waiting for [ACRO] stream…", cx, cy);
     return;
   }
-  const phi1 =  acroState.q1        * Math.PI / 180;   // shoulder link, from hang (0 = down)
-  const phi2 = (acroState.q2 + 180) * Math.PI / 180;   // IMU link, from upright (+180 → hang frame)
+  const phi1 = (acroState.q1 + 180) * Math.PI / 180;   // shoulder link, from upright (+180 → screen-down frame)
+  const phi2 = (acroState.q2 + 180) * Math.PI / 180;   // IMU link, from upright (+180 → screen-down frame)
   const e1 = { x: cx + L1 * Math.sin(phi1), y: cy + L1 * Math.cos(phi1) };
   const e2 = { x: e1.x + L2 * Math.sin(phi2), y: e1.y + L2 * Math.cos(phi2) };
   ctx.lineCap = "round";

@@ -1,5 +1,18 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-06-29 (late-3) — raw-primitive `[ACRO]` line (your build 1634 contract change)
+> Switched the parser to the new wire format `[ACRO] hang= st= q2= w2= sh= wsh=`. UI now
+> **derives** `q1 = q2 + sh` and `w1 = w2 + wsh` (both from-upright); the gauges/stick figure are
+> unchanged downstream (link 1 ← q1, link 2 ← q2, both +180°). Used a `\b`-anchored key regex so
+> `sh=` can't match inside `wsh=`. Verified on a sample line (q2=176.4, sh=3.2 → q1=179.6 ✓).
+> `q1` gauge tooltip updated to "q1 = q2 + sh".
+
+> ## Update 2026-06-29 (late-2) — q1 ALSO from-upright (your reply item 1); all 4 items actioned
+> Corrected: **both q1 and q2 are from-upright** (0 = upright, ±180 = hang). Stick figure now
+> offsets **both** links by +180° (was only q2). q1 gauge tooltip fixed ("0 upright, ±180
+> hanging, = q2 when elbow straight"). Items 2–4 confirmed and already matched: +180° offset
+> kept, `st=` parsed as `off`/`swing`/`bal`, `[SYS] ACRO` keyed. Nothing else outstanding.
+
 > ## Update 2026-06-29 (late) — q2 convention flipped to from-UPRIGHT (your §2 edit)
 > Adopted your new `q2` definition: **0 = upright, ±180 = hanging, cal/hang pose = 180°**
 > (`q1` unchanged: 0 at hang). Stick figure now offsets the IMU link by **+180°** so the pose
