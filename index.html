@@ -1329,20 +1329,13 @@
 
         <!-- Balance LQR gains (ak0..ak3 = K·[q1, q1̇, q2, q2̇]). Moved here from the
              generic Tuning panel (TUN_HIDDEN) so they sit with the acrobot controls.
-             Free number inputs (hand-tuned magnitudes — no slider clamp); each sends
-             `Cu akN=…` live and the [TUN] echo reconciles. -->
+             Rows built in JS: each gain = an auto-fitting slider (range grows to fit
+             the value so a rig-tuned magnitude never clamps) + an editable number box
+             for exact/out-of-range entry. Each sends `Cu akN=…`; the [TUN] echo
+             reconciles. -->
         <div class="acro-gains" style="margin-top: 12px;">
           <div class="stat" style="margin-bottom: 6px;">balance LQR gains &nbsp;·&nbsp; K = [q1, q1̇, q2, q2̇]</div>
-          <div class="row" style="gap: 12px; flex-wrap: wrap;">
-            <label style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">q1
-              <input type="number" id="acroAk0" step="any" class="needs-conn" style="width: 8ch; text-align: right;"></label>
-            <label style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">q1̇
-              <input type="number" id="acroAk1" step="any" class="needs-conn" style="width: 8ch; text-align: right;"></label>
-            <label style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">q2
-              <input type="number" id="acroAk2" step="any" class="needs-conn" style="width: 8ch; text-align: right;"></label>
-            <label style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">q2̇
-              <input type="number" id="acroAk3" step="any" class="needs-conn" style="width: 8ch; text-align: right;"></label>
-          </div>
+          <div id="acroGains"></div>
         </div>
 
         <!-- ARM gate (acarm) — bespoke, confirm-guarded control. This is the live
@@ -1496,7 +1489,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 51, date: "2026-06-29" };
+const APP_BUILD = { ver: 52, date: "2026-06-29" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -4704,24 +4697,61 @@ if (btnAcroHang) btnAcroHang.onclick = async () => {
   catch (e) { log("Hang cal failed: " + errMsg(e), "bad"); }
 };
 
-// Balance LQR gains (ak0..ak3) — bespoke inputs in the Acrobot card. Hidden from
-// the generic [TUN] panel (TUN_HIDDEN); each sends `Cu akN=…` through the same
-// send pump, and the [TUN] echo reconciles via syncAcroGain().
-const ACRO_GAIN_IDS = { ak0: "acroAk0", ak1: "acroAk1", ak2: "acroAk2", ak3: "acroAk3" };
-function syncAcroGain(name, val) {
-  const el = document.getElementById(ACRO_GAIN_IDS[name]);
-  if (el && document.activeElement !== el) el.value = val;
+// Balance LQR gains (ak0..ak3) — bespoke sliders in the Acrobot card, hidden from
+// the generic [TUN] panel (TUN_HIDDEN). Each gain row = an auto-fitting slider +
+// an editable number box. The slider range grows to fit the value (both signs)
+// so a rig-tuned magnitude never clamps; the number box allows exact / out-of-
+// range entry. Both send `Cu akN=…` via the send pump; the [TUN] echo reconciles.
+const ACRO_GAINS = [
+  { name: "ak0", label: "q1"  }, { name: "ak1", label: "q1̇" },
+  { name: "ak2", label: "q2"  }, { name: "ak3", label: "q2̇" },
+];
+const ACRO_GAIN_FLOOR = 10;            // smallest half-range, so a ~0 gain still slides usefully
+const acroGainEls = {};                // name → { slider, num, bound }
+const acroGainBound = v => Math.max(ACRO_GAIN_FLOOR, niceCeil(Math.abs(v) * 1.3));   // headroom to drag past
+
+function fitAcroGain(name, v) {
+  const rec = acroGainEls[name]; if (!rec) return;
+  const b = acroGainBound(v);
+  if (b !== rec.bound) {
+    rec.bound = b;
+    rec.slider.min = -b; rec.slider.max = b; rec.slider.step = b / 200;
+  }
+  if (document.activeElement !== rec.slider) rec.slider.value = v;
+  if (document.activeElement !== rec.num)    rec.num.value    = v;
 }
-for (const [name, id] of Object.entries(ACRO_GAIN_IDS)) {
-  const el = document.getElementById(id);
-  if (!el) continue;
-  el.addEventListener("change", () => {
-    const v = parseFloat(el.value);
-    if (!isFinite(v)) { el.value = (name in tunState) ? tunState[name] : ""; return; }   // reject garbage
-    tunState[name] = v;
-    pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
-  });
-}
+// Reconcile from a [TUN] acN= echo / dump (called via setTunParam's hidden hook).
+function syncAcroGain(name, val) { fitAcroGain(name, val); }
+
+(function buildAcroGains() {
+  const wrap = document.getElementById("acroGains");
+  if (!wrap) return;
+  for (const g of ACRO_GAINS) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.cssText = "gap: 8px; align-items: center; margin-bottom: 5px;";
+    const lab = document.createElement("span");
+    lab.textContent = g.label;
+    lab.style.cssText = "width: 3ch; font-size: 11px; color: var(--muted);";
+    const sld = document.createElement("input");
+    sld.type = "range"; sld.className = "needs-conn"; sld.style.flex = "1";
+    sld.min = -ACRO_GAIN_FLOOR; sld.max = ACRO_GAIN_FLOOR; sld.step = ACRO_GAIN_FLOOR / 200; sld.value = 0;
+    const num = document.createElement("input");
+    num.type = "number"; num.step = "any"; num.className = "needs-conn";
+    num.style.cssText = "width: 7ch; text-align: right;";
+    row.append(lab, sld, num);
+    wrap.appendChild(row);
+    acroGainEls[g.name] = { slider: sld, num, bound: ACRO_GAIN_FLOOR };
+    const push = v => { tunState[g.name] = v; pendingSends[`__tun_${g.name}`] = { kind: "Cu", name: g.name, val: v }; };
+    sld.addEventListener("input", () => { const v = parseFloat(sld.value); num.value = v; push(v); });
+    num.addEventListener("change", () => {
+      const v = parseFloat(num.value);
+      if (!isFinite(v)) { num.value = (g.name in tunState) ? tunState[g.name] : ""; return; }   // reject garbage
+      fitAcroGain(g.name, v);   // grow the slider range to fit, then move it
+      push(v);
+    });
+  }
+})();
 
 // ARM gate — bespoke, confirm-guarded acarm toggle. Queues `Cu acarm=1/0` through
 // the same send pump as the generic [TUN] controls; the [TUN] echo reconciles via
