@@ -1505,7 +1505,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 57, date: "2026-06-30" };
+const APP_BUILD = { ver: 58, date: "2026-06-30" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -4584,6 +4584,7 @@ function setAcroActive(on) {
   if (on && !_acroWasActive && transport && transport.isConnected()) {
     try { transport.writeCmd("Z\n"); } catch (e) { /* non-fatal */ }
   }
+  if (on) reseedAcroGains();   // show stored gain values immediately, before any nudge
   _acroWasActive = on;
 }
 
@@ -4723,19 +4724,18 @@ if (btnAcroHang) btnAcroHang.onclick = async () => {
 };
 
 // Balance LQR gains (ak0..ak3) — bespoke sliders in the Acrobot card, hidden from
-// the generic [TUN] panel (TUN_HIDDEN). Each gain row = an auto-fitting slider +
-// an editable number box. The slider range grows to fit the value (both signs)
-// so a rig-tuned magnitude never clamps; the number box allows exact / out-of-
-// range entry. Both send `Cu akN=…` via the send pump; the [TUN] echo reconciles.
+// the generic [TUN] panel (TUN_HIDDEN). Styled like the Balancing LQR gains: a
+// read-only cyan value + a full-width auto-fitting slider (range grows so a
+// rig-tuned magnitude never clamps). Each sends `Cu akN=…`; the [TUN] echo
+// reconciles, and reseedAcroGains() shows stored values on acrobot entry.
 const ACRO_GAINS = [
   { name: "ak0", label: "q1"  }, { name: "ak1", label: "q1̇" },
   { name: "ak2", label: "q2"  }, { name: "ak3", label: "q2̇" },
 ];
 const ACRO_GAIN_FLOOR = 0.5;          // smallest half-range — these gains are ~≤0.5, so a fine slider (auto-expands below if a value is larger)
-const acroGainEls = {};                // name → { slider, num, bound }
+const acroGainEls = {};                // name → { slider, valEl, bound }
 const acroGainBound = v => Math.max(ACRO_GAIN_FLOOR, niceCeil(Math.abs(v) * 1.3));   // headroom to drag past
-// Trim float noise for display ("12.3000001" → "12.3") so it fits the value slot.
-const fmtGain = v => String(+v.toFixed(3));
+const fmtGain = v => String(+v.toFixed(3));   // trim float noise ("0.3000001" → "0.3")
 
 function fitAcroGain(name, v) {
   const rec = acroGainEls[name]; if (!rec) return;
@@ -4745,37 +4745,32 @@ function fitAcroGain(name, v) {
     rec.slider.min = -b; rec.slider.max = b; rec.slider.step = b / 200;
   }
   if (document.activeElement !== rec.slider) rec.slider.value = v;
-  if (document.activeElement !== rec.num)    rec.num.value    = fmtGain(v);
+  rec.valEl.textContent = fmtGain(v);
 }
 // Reconcile from a [TUN] acN= echo / dump (called via setTunParam's hidden hook).
 function syncAcroGain(name, val) { fitAcroGain(name, val); }
+// Re-assert every gain's display from tunState — called on acrobot entry so the
+// sliders show their stored values immediately (like the Balancing gains seed on
+// connect), not only after the user nudges one.
+function reseedAcroGains() {
+  for (const name in acroGainEls) if (name in tunState) fitAcroGain(name, tunState[name]);
+}
 
-// Build one .slider-row (label + editable cyan value + full-width auto-fitting
-// slider), like the Balancing LQR gains. onChange(v) fires when either control
-// moves. Registers in acroGainEls so fitAcroGain() can reconcile from [TUN].
+// Build one .slider-row exactly like the Balancing LQR gains: label + read-only
+// cyan value readout + full-width auto-fitting slider. The value is initialised
+// at build (never blank) and updated from the slider or a [TUN] reconcile.
 function makeAcroGainRow(wrap, name, label, onChange) {
   const row = document.createElement("div"); row.className = "slider-row";
   const lbl = document.createElement("label"); lbl.textContent = label;
   const val = document.createElement("span"); val.className = "value";
-  const num = document.createElement("input");
-  num.type = "number"; num.step = "any"; num.className = "needs-conn";
-  // Wider + no spinner arrows (they steal width and clip the value), blended
-  // into the .value slot so it reads like the Balancing gains' cyan readout.
-  num.style.cssText = "width: 9ch; text-align: right; background: transparent; border: none; color: inherit; font: inherit; margin: 0; padding: 0; -webkit-appearance: none; -moz-appearance: textfield; appearance: none;";
-  val.appendChild(num);
+  val.textContent = fmtGain(0);   // seed the readout at build like LQR_PARAMS do
   const sld = document.createElement("input");
   sld.type = "range"; sld.className = "needs-conn";
   sld.min = -ACRO_GAIN_FLOOR; sld.max = ACRO_GAIN_FLOOR; sld.step = ACRO_GAIN_FLOOR / 200; sld.value = 0;
   row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
   wrap.appendChild(row);
-  acroGainEls[name] = { slider: sld, num, bound: ACRO_GAIN_FLOOR };
-  sld.addEventListener("input", () => { const v = parseFloat(sld.value); num.value = fmtGain(v); onChange(v); });
-  num.addEventListener("change", () => {
-    const v = parseFloat(num.value);
-    if (!isFinite(v)) { num.value = (name in tunState) ? fmtGain(tunState[name]) : ""; return; }   // reject garbage
-    fitAcroGain(name, v);   // grow the slider range to fit, then move it
-    onChange(v);
-  });
+  acroGainEls[name] = { slider: sld, valEl: val, bound: ACRO_GAIN_FLOOR };
+  sld.addEventListener("input", () => { const v = parseFloat(sld.value); val.textContent = fmtGain(v); onChange(v); });
   return acroGainEls[name];
 }
 
