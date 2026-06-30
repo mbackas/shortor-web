@@ -1342,6 +1342,18 @@
           <div id="acroGains"></div>
         </div>
 
+        <!-- Swing-up enable — drives the firmware acsw (0/1) flag. OFF = balance-
+             only. The pump-gain slider (acpump) is an independent tunable moved
+             here from the generic [TUN] panel (TUN_HIDDEN). -->
+        <div class="acro-swing acro-gains" style="margin-top: 12px;">
+          <label class="toggle needs-conn">
+            <input type="checkbox" id="acroSwingOn" checked>
+            <span>Swing-up enabled</span>
+          </label>
+          <p class="help" style="margin: 4px 0 6px;">Off → the controller skips swing-up (pump gain 0); it only catches &amp; balances when you bring the bot near upright by hand.</p>
+          <div id="acroSwingGain"></div>
+        </div>
+
         <!-- ARM gate (acarm) — bespoke, confirm-guarded control. This is the live
              "go" switch: arming lets the firmware drive the motor to swing up and
              balance. Kept out of the generic [TUN] panel (TUN_HIDDEN) so there is
@@ -1493,7 +1505,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 54, date: "2026-06-29" };
+const APP_BUILD = { ver: 55, date: "2026-06-29" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -3506,13 +3518,11 @@ const TUN_META = {
 };
 // Friendly labels for params that must stay free number inputs (unknown/hand-
 // tuned magnitudes — a wrong slider range would clamp them).
-const TUN_LABELS = {
-  acpump: "acro swing-up pump",
-};
+const TUN_LABELS = {};
 // Params with a bespoke control elsewhere — tracked in tunState but NOT given a
-// generic row. acarm → confirm-guarded ARM toggle; ak0..ak3 → the Balance LQR
-// gains sub-panel, both in the Acrobot card.
-const TUN_HIDDEN = new Set(["acarm", "ak0", "ak1", "ak2", "ak3"]);
+// generic row. acarm → confirm-guarded ARM toggle; acsw → Swing-up toggle;
+// ak0..ak3 → Balance LQR gains; acpump → swing-up pump gain. All in the Acrobot card.
+const TUN_HIDDEN = new Set(["acarm", "acsw", "ak0", "ak1", "ak2", "ak3", "acpump"]);
 // [TUN] carries no type metadata, so booleans are a UI-side known set — rendered
 // as a toggle that sends 1/0 instead of a slider. (Per FW: only usbhap today.)
 const TUN_BOOL = new Set(["usbhap"]);
@@ -3527,7 +3537,8 @@ function setTunParam(name, val) {
   // forward the wire value to their dedicated handler in the Acrobot card.
   if (TUN_HIDDEN.has(name)) {
     if (name === "acarm") syncAcroArm(val);
-    else if (/^ak[0-3]$/.test(name)) syncAcroGain(name, val);
+    else if (name === "acsw") syncAcroSwing(val);
+    else if (/^ak[0-3]$/.test(name) || name === "acpump") syncAcroGain(name, val);
     return;
   }
   let rec = tunEls[name];
@@ -4729,37 +4740,69 @@ function fitAcroGain(name, v) {
 // Reconcile from a [TUN] acN= echo / dump (called via setTunParam's hidden hook).
 function syncAcroGain(name, val) { fitAcroGain(name, val); }
 
+// Build one .slider-row (label + editable cyan value + full-width auto-fitting
+// slider), like the Balancing LQR gains. onChange(v) fires when either control
+// moves. Registers in acroGainEls so fitAcroGain() can reconcile from [TUN].
+function makeAcroGainRow(wrap, name, label, onChange) {
+  const row = document.createElement("div"); row.className = "slider-row";
+  const lbl = document.createElement("label"); lbl.textContent = label;
+  const val = document.createElement("span"); val.className = "value";
+  const num = document.createElement("input");
+  num.type = "number"; num.step = "any"; num.className = "needs-conn";
+  // Wider + no spinner arrows (they steal width and clip the value), blended
+  // into the .value slot so it reads like the Balancing gains' cyan readout.
+  num.style.cssText = "width: 9ch; text-align: right; background: transparent; border: none; color: inherit; font: inherit; margin: 0; padding: 0; -webkit-appearance: none; -moz-appearance: textfield; appearance: none;";
+  val.appendChild(num);
+  const sld = document.createElement("input");
+  sld.type = "range"; sld.className = "needs-conn";
+  sld.min = -ACRO_GAIN_FLOOR; sld.max = ACRO_GAIN_FLOOR; sld.step = ACRO_GAIN_FLOOR / 200; sld.value = 0;
+  row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
+  wrap.appendChild(row);
+  acroGainEls[name] = { slider: sld, num, bound: ACRO_GAIN_FLOOR };
+  sld.addEventListener("input", () => { const v = parseFloat(sld.value); num.value = fmtGain(v); onChange(v); });
+  num.addEventListener("change", () => {
+    const v = parseFloat(num.value);
+    if (!isFinite(v)) { num.value = (name in tunState) ? fmtGain(tunState[name]) : ""; return; }   // reject garbage
+    fitAcroGain(name, v);   // grow the slider range to fit, then move it
+    onChange(v);
+  });
+  return acroGainEls[name];
+}
+
+// LQR gains (ak0..ak3) — each sends `Cu akN=…` directly.
 (function buildAcroGains() {
   const wrap = document.getElementById("acroGains");
   if (!wrap) return;
   for (const g of ACRO_GAINS) {
-    // Same .slider-row layout as the Balancing LQR gains: label + cyan value
-    // readout on top, full-width slider below. The value is an editable number
-    // (styled to blend into the .value slot) so exact / out-of-range entry works.
-    const row = document.createElement("div"); row.className = "slider-row";
-    const lbl = document.createElement("label"); lbl.textContent = g.label;
-    const val = document.createElement("span"); val.className = "value";
-    const num = document.createElement("input");
-    num.type = "number"; num.step = "any"; num.className = "needs-conn";
-    // Wider + no spinner arrows (they steal width and clip the value), blended
-    // into the .value slot so it reads like the Balancing gains' cyan readout.
-    num.style.cssText = "width: 9ch; text-align: right; background: transparent; border: none; color: inherit; font: inherit; margin: 0; padding: 0; -webkit-appearance: none; -moz-appearance: textfield; appearance: none;";
-    val.appendChild(num);
-    const sld = document.createElement("input");
-    sld.type = "range"; sld.className = "needs-conn";
-    sld.min = -ACRO_GAIN_FLOOR; sld.max = ACRO_GAIN_FLOOR; sld.step = ACRO_GAIN_FLOOR / 200; sld.value = 0;
-    row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
-    wrap.appendChild(row);
-    acroGainEls[g.name] = { slider: sld, num, bound: ACRO_GAIN_FLOOR };
-    const push = v => { tunState[g.name] = v; pendingSends[`__tun_${g.name}`] = { kind: "Cu", name: g.name, val: v }; };
-    sld.addEventListener("input", () => { const v = parseFloat(sld.value); num.value = fmtGain(v); push(v); });
-    num.addEventListener("change", () => {
-      const v = parseFloat(num.value);
-      if (!isFinite(v)) { num.value = (g.name in tunState) ? tunState[g.name] : ""; return; }   // reject garbage
-      fitAcroGain(g.name, v);   // grow the slider range to fit, then move it
-      push(v);
+    makeAcroGainRow(wrap, g.name, g.label, v => {
+      tunState[g.name] = v;
+      pendingSends[`__tun_${g.name}`] = { kind: "Cu", name: g.name, val: v };
     });
   }
+})();
+
+// Swing-up enable — drives the firmware's acsw (0/1) flag directly. OFF =
+// balance-only (it only catches when you bring the bot near upright by hand);
+// ON = run swing-up. Sent as `Cu acsw=…`; the [TUN] echo reconciles the toggle.
+// The pump-gain slider (acpump) is an independent tunable, not gated by this.
+const acroSwingChk = document.getElementById("acroSwingOn");
+if (acroSwingChk) acroSwingChk.addEventListener("change", () => {
+  const on = acroSwingChk.checked;
+  tunState.acsw = on ? 1 : 0;
+  pendingSends["__tun_acsw"] = { kind: "Cu", name: "acsw", val: on ? 1 : 0 };
+  log(on ? "Swing-up enabled." : "Swing-up disabled — balance-only.", "ok");
+});
+function syncAcroSwing(val) {   // from [TUN] acsw= echo / dump
+  if (acroSwingChk && document.activeElement !== acroSwingChk) acroSwingChk.checked = (val != 0);
+}
+// Pump gain (acpump) — a plain gain slider, sends `Cu acpump=…` directly.
+(function buildAcroPump() {
+  const wrap = document.getElementById("acroSwingGain");
+  if (!wrap) return;
+  makeAcroGainRow(wrap, "acpump", "pump gain", v => {
+    tunState.acpump = v;
+    pendingSends["__tun_acpump"] = { kind: "Cu", name: "acpump", val: v };
+  });
 })();
 
 // ARM gate — bespoke, confirm-guarded acarm toggle. Queues `Cu acarm=1/0` through

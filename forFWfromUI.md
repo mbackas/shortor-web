@@ -1,5 +1,11 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-06-29 (eve) — Swing-up toggle now drives `acsw` (your new flag)
+> Repointed the **Swing-up enabled** toggle to send **`Cu acsw=1/0`** directly (was gating
+> `acpump=0`). OFF = balance-only. Reconciles from the `[TUN] acsw=` echo. `acpump` is now an
+> independent pump-gain slider in the card (no longer zeroed by the toggle). Both stay hidden
+> from the generic `[TUN]` panel.
+
 > ## Update 2026-06-29 (late-3) — raw-primitive `[ACRO]` line (your build 1634 contract change)
 > Switched the parser to the new wire format `[ACRO] hang= st= q2= w2= sh= wsh=`. UI now
 > **derives** `q1 = q2 + sh` and `w1 = w2 + wsh` (both from-upright); the gauges/stick figure are
