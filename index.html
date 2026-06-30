@@ -1505,7 +1505,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 56, date: "2026-06-29" };
+const APP_BUILD = { ver: 57, date: "2026-06-30" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -4568,6 +4568,7 @@ const acroState  = { q1: 0, q2: 0, hang: 0, valid: false };
 
 // Reflect the plant state in the UI WITHOUT re-sending a command — called both
 // from the user toggle and from the authoritative [SYS] mode word.
+let _acroWasActive = false;
 function setAcroActive(on) {
   const cb   = document.getElementById("acroPlant");
   const body = document.getElementById("acroBody");
@@ -4576,6 +4577,14 @@ function setAcroActive(on) {
   if (body) body.hidden = !on;
   if (pill) { pill.textContent = on ? "ACRO" : "plant —"; pill.className = on ? "pill ok" : "pill"; }
   if (on && !acroRaf) acroRaf = requestAnimationFrame(drawAcro);   // canvas just un-hid
+  // On the cart→acro transition, re-pull the registry (Z): the acro-only
+  // tunables (gains, acpump, acsw, signs) aren't in the connect-time dump while
+  // the firmware is in cart mode, so without this their sliders stay blank until
+  // touched. Once per entry (guarded), not on every repeating [SYS] ACRO.
+  if (on && !_acroWasActive && transport && transport.isConnected()) {
+    try { transport.writeCmd("Z\n"); } catch (e) { /* non-fatal */ }
+  }
+  _acroWasActive = on;
 }
 
 function onAcro(hang, q1, w1, q2, w2, st) {
@@ -4636,6 +4645,7 @@ function resetAcro() {
   const arm = document.getElementById("acroArm");
   if (arm) arm.checked = false;
   setAcroArmPill(false);   // don't imply armed on a dead link; [TUN] re-syncs on reconnect
+  _acroWasActive = false;  // so a reconnect into acro re-pulls the registry (Z)
   if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
 }
 
