@@ -536,6 +536,10 @@
   }
   .slider-row input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
   .slider-row input[type=range]:disabled + * { opacity: 0.5; }
+  /* Acrobot gain value: editable number blended into the .value slot — drop the
+     spin arrows so the right-aligned value isn't clipped. */
+  .acro-gains input[type=number]::-webkit-inner-spin-button,
+  .acro-gains input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
   input[type=range]::-webkit-slider-runnable-track {
     height: 4px;
@@ -1489,7 +1493,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 53, date: "2026-06-29" };
+const APP_BUILD = { ver: 54, date: "2026-06-29" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -4709,6 +4713,8 @@ const ACRO_GAINS = [
 const ACRO_GAIN_FLOOR = 10;            // smallest half-range, so a ~0 gain still slides usefully
 const acroGainEls = {};                // name → { slider, num, bound }
 const acroGainBound = v => Math.max(ACRO_GAIN_FLOOR, niceCeil(Math.abs(v) * 1.3));   // headroom to drag past
+// Trim float noise for display ("12.3000001" → "12.3") so it fits the value slot.
+const fmtGain = v => String(+v.toFixed(3));
 
 function fitAcroGain(name, v) {
   const rec = acroGainEls[name]; if (!rec) return;
@@ -4718,7 +4724,7 @@ function fitAcroGain(name, v) {
     rec.slider.min = -b; rec.slider.max = b; rec.slider.step = b / 200;
   }
   if (document.activeElement !== rec.slider) rec.slider.value = v;
-  if (document.activeElement !== rec.num)    rec.num.value    = v;
+  if (document.activeElement !== rec.num)    rec.num.value    = fmtGain(v);
 }
 // Reconcile from a [TUN] acN= echo / dump (called via setTunParam's hidden hook).
 function syncAcroGain(name, val) { fitAcroGain(name, val); }
@@ -4735,7 +4741,9 @@ function syncAcroGain(name, val) { fitAcroGain(name, val); }
     const val = document.createElement("span"); val.className = "value";
     const num = document.createElement("input");
     num.type = "number"; num.step = "any"; num.className = "needs-conn";
-    num.style.cssText = "width: 7ch; text-align: right; background: transparent; border: none; color: inherit; font: inherit;";
+    // Wider + no spinner arrows (they steal width and clip the value), blended
+    // into the .value slot so it reads like the Balancing gains' cyan readout.
+    num.style.cssText = "width: 9ch; text-align: right; background: transparent; border: none; color: inherit; font: inherit; margin: 0; padding: 0; -webkit-appearance: none; -moz-appearance: textfield; appearance: none;";
     val.appendChild(num);
     const sld = document.createElement("input");
     sld.type = "range"; sld.className = "needs-conn";
@@ -4744,7 +4752,7 @@ function syncAcroGain(name, val) { fitAcroGain(name, val); }
     wrap.appendChild(row);
     acroGainEls[g.name] = { slider: sld, num, bound: ACRO_GAIN_FLOOR };
     const push = v => { tunState[g.name] = v; pendingSends[`__tun_${g.name}`] = { kind: "Cu", name: g.name, val: v }; };
-    sld.addEventListener("input", () => { const v = parseFloat(sld.value); num.value = v; push(v); });
+    sld.addEventListener("input", () => { const v = parseFloat(sld.value); num.value = fmtGain(v); push(v); });
     num.addEventListener("change", () => {
       const v = parseFloat(num.value);
       if (!isFinite(v)) { num.value = (g.name in tunState) ? tunState[g.name] : ""; return; }   // reject garbage
