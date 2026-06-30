@@ -1327,10 +1327,28 @@
         <div class="stat" style="margin-top: 6px;">pose — shoulder (amber) · elbow (blue); dashed = hang &amp; upright</div>
         <canvas id="acroCanvas" height="260"></canvas>
 
+        <!-- Balance LQR gains (ak0..ak3 = K·[q1, q1̇, q2, q2̇]). Moved here from the
+             generic Tuning panel (TUN_HIDDEN) so they sit with the acrobot controls.
+             Free number inputs (hand-tuned magnitudes — no slider clamp); each sends
+             `Cu akN=…` live and the [TUN] echo reconciles. -->
+        <div class="acro-gains" style="margin-top: 12px;">
+          <div class="stat" style="margin-bottom: 6px;">balance LQR gains &nbsp;·&nbsp; K = [q1, q1̇, q2, q2̇]</div>
+          <div class="row" style="gap: 12px; flex-wrap: wrap;">
+            <label style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">q1
+              <input type="number" id="acroAk0" step="any" class="needs-conn" style="width: 8ch; text-align: right;"></label>
+            <label style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">q1̇
+              <input type="number" id="acroAk1" step="any" class="needs-conn" style="width: 8ch; text-align: right;"></label>
+            <label style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">q2
+              <input type="number" id="acroAk2" step="any" class="needs-conn" style="width: 8ch; text-align: right;"></label>
+            <label style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">q2̇
+              <input type="number" id="acroAk3" step="any" class="needs-conn" style="width: 8ch; text-align: right;"></label>
+          </div>
+        </div>
+
         <!-- ARM gate (acarm) — bespoke, confirm-guarded control. This is the live
              "go" switch: arming lets the firmware drive the motor to swing up and
              balance. Kept out of the generic [TUN] panel (TUN_HIDDEN) so there is
-             exactly one, confirm-protected arm control. LQR gains / signs stay in
+             exactly one, confirm-protected arm control. acpump / signs stay in
              the generic Tuning panel. -->
         <div class="acro-arm" style="margin-top: 12px;">
           <div class="row" style="gap: 10px; align-items: center;">
@@ -1478,7 +1496,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 50, date: "2026-06-29" };
+const APP_BUILD = { ver: 51, date: "2026-06-29" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -3492,12 +3510,12 @@ const TUN_META = {
 // Friendly labels for params that must stay free number inputs (unknown/hand-
 // tuned magnitudes — a wrong slider range would clamp them).
 const TUN_LABELS = {
-  ak0: "acro LQR q1", ak1: "acro LQR q1̇", ak2: "acro LQR q2", ak3: "acro LQR q2̇",
   acpump: "acro swing-up pump",
 };
 // Params with a bespoke control elsewhere — tracked in tunState but NOT given a
-// generic row. acarm has the confirm-guarded ARM toggle in the Acrobot card.
-const TUN_HIDDEN = new Set(["acarm"]);
+// generic row. acarm → confirm-guarded ARM toggle; ak0..ak3 → the Balance LQR
+// gains sub-panel, both in the Acrobot card.
+const TUN_HIDDEN = new Set(["acarm", "ak0", "ak1", "ak2", "ak3"]);
 // [TUN] carries no type metadata, so booleans are a UI-side known set — rendered
 // as a toggle that sends 1/0 instead of a slider. (Per FW: only usbhap today.)
 const TUN_BOOL = new Set(["usbhap"]);
@@ -3508,9 +3526,13 @@ const tunEls   = {};   // name → { input, valEl, meta }
 function setTunParam(name, val) {
   if (Number.isNaN(val)) return;
   tunState[name] = val;
-  // Bespoke-control params (e.g. acarm) are tracked but get no generic row;
-  // forward the wire value to their dedicated handler instead.
-  if (TUN_HIDDEN.has(name)) { if (name === "acarm") syncAcroArm(val); return; }
+  // Bespoke-control params (acarm, ak0..ak3) are tracked but get no generic row;
+  // forward the wire value to their dedicated handler in the Acrobot card.
+  if (TUN_HIDDEN.has(name)) {
+    if (name === "acarm") syncAcroArm(val);
+    else if (/^ak[0-3]$/.test(name)) syncAcroGain(name, val);
+    return;
+  }
   let rec = tunEls[name];
   if (!rec) {
     const wrap = document.getElementById("tunRegistry");
@@ -4681,6 +4703,25 @@ if (btnAcroHang) btnAcroHang.onclick = async () => {
   try { await transport.writeCmd("GH\n"); log("Calibrating hanging zero — hold the bot hanging straight down…", "ok"); }
   catch (e) { log("Hang cal failed: " + errMsg(e), "bad"); }
 };
+
+// Balance LQR gains (ak0..ak3) — bespoke inputs in the Acrobot card. Hidden from
+// the generic [TUN] panel (TUN_HIDDEN); each sends `Cu akN=…` through the same
+// send pump, and the [TUN] echo reconciles via syncAcroGain().
+const ACRO_GAIN_IDS = { ak0: "acroAk0", ak1: "acroAk1", ak2: "acroAk2", ak3: "acroAk3" };
+function syncAcroGain(name, val) {
+  const el = document.getElementById(ACRO_GAIN_IDS[name]);
+  if (el && document.activeElement !== el) el.value = val;
+}
+for (const [name, id] of Object.entries(ACRO_GAIN_IDS)) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.addEventListener("change", () => {
+    const v = parseFloat(el.value);
+    if (!isFinite(v)) { el.value = (name in tunState) ? tunState[name] : ""; return; }   // reject garbage
+    tunState[name] = v;
+    pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
+  });
+}
 
 // ARM gate — bespoke, confirm-guarded acarm toggle. Queues `Cu acarm=1/0` through
 // the same send pump as the generic [TUN] controls; the [TUN] echo reconciles via
