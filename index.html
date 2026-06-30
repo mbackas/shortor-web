@@ -1489,7 +1489,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 52, date: "2026-06-29" };
+const APP_BUILD = { ver: 53, date: "2026-06-29" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -4727,19 +4727,20 @@ function syncAcroGain(name, val) { fitAcroGain(name, val); }
   const wrap = document.getElementById("acroGains");
   if (!wrap) return;
   for (const g of ACRO_GAINS) {
-    const row = document.createElement("div");
-    row.className = "row";
-    row.style.cssText = "gap: 8px; align-items: center; margin-bottom: 5px;";
-    const lab = document.createElement("span");
-    lab.textContent = g.label;
-    lab.style.cssText = "width: 3ch; font-size: 11px; color: var(--muted);";
-    const sld = document.createElement("input");
-    sld.type = "range"; sld.className = "needs-conn"; sld.style.flex = "1";
-    sld.min = -ACRO_GAIN_FLOOR; sld.max = ACRO_GAIN_FLOOR; sld.step = ACRO_GAIN_FLOOR / 200; sld.value = 0;
+    // Same .slider-row layout as the Balancing LQR gains: label + cyan value
+    // readout on top, full-width slider below. The value is an editable number
+    // (styled to blend into the .value slot) so exact / out-of-range entry works.
+    const row = document.createElement("div"); row.className = "slider-row";
+    const lbl = document.createElement("label"); lbl.textContent = g.label;
+    const val = document.createElement("span"); val.className = "value";
     const num = document.createElement("input");
     num.type = "number"; num.step = "any"; num.className = "needs-conn";
-    num.style.cssText = "width: 7ch; text-align: right;";
-    row.append(lab, sld, num);
+    num.style.cssText = "width: 7ch; text-align: right; background: transparent; border: none; color: inherit; font: inherit;";
+    val.appendChild(num);
+    const sld = document.createElement("input");
+    sld.type = "range"; sld.className = "needs-conn";
+    sld.min = -ACRO_GAIN_FLOOR; sld.max = ACRO_GAIN_FLOOR; sld.step = ACRO_GAIN_FLOOR / 200; sld.value = 0;
+    row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
     wrap.appendChild(row);
     acroGainEls[g.name] = { slider: sld, num, bound: ACRO_GAIN_FLOOR };
     const push = v => { tunState[g.name] = v; pendingSends[`__tun_${g.name}`] = { kind: "Cu", name: g.name, val: v }; };
