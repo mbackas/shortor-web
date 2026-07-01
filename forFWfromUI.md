@@ -1,5 +1,12 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-06-30 (b) — LQR target-pose toggle (`actgt`)
+> Added a dedicated **Upright ⇄ Hang** toggle in the Acrobot card (under the LQR gains), not
+> the auto-slider: OFF = **hang** (`Cu actgt=180`, default — for safe gain bring-up), ON =
+> **upright** (`Cu actgt=0`). Shows a `target: hang/upright` pill (upright = amber). Hidden
+> from the generic `[TUN]` panel; reconciles from the `[TUN] actgt=` echo (0→upright,
+> 180→hang; `<90°` treated as upright). Resets to hang on disconnect. Persists on `S`.
+
 > ## Update 2026-06-30 — `GA` swing-axis cal button + 2-step cal status (build 1231)
 > Added a **Calibrate swing axis** button (sends `GA`) next to Calibrate hanging zero, with a
 > "hold horizontal ~90°, after hanging cal" hint. Actioned both nice-to-haves: the button is

@@ -1345,8 +1345,19 @@
         <div class="acro-gains" style="margin-top: 12px;">
           <div class="stat" style="margin-bottom: 6px;">balance LQR gains &nbsp;·&nbsp; K = [q1, q1̇, q2, q2̇]</div>
           <div id="acroGains"></div>
+          <!-- LQR target pose (actgt): which pose the balance controller regulates
+               to. Hang (180°) is stable — tune gains + verify signs there safely;
+               Upright (0°) is the real, unstable goal. Sends Cu actgt=0/180. -->
+          <div class="row" style="margin-top: 8px; gap: 10px; align-items: center;">
+            <label class="toggle needs-conn">
+              <input type="checkbox" id="acroTargetUpright">
+              <span>LQR target: upright</span>
+            </label>
+            <span id="acroTargetPill" class="pill" title="Pose the balance LQR regulates to (actgt): Hang (180°) is stable — tune gains &amp; verify signs there first; Upright (0°) is the real, unstable goal.">target: hang</span>
+          </div>
+          <p class="help" style="margin: 4px 0 0;">Off = <b>hang</b> (stable — tune gains &amp; verify signs here first). On = <b>upright</b> (the real, unstable goal). The catch region &amp; task state follow this.</p>
           <div class="row" style="margin-top: 8px;">
-            <button id="btnSaveAcro" class="primary needs-conn" title="Persist the acrobot tuning (gains, signs, pump, plant) to the knob's NVS so it survives a power cycle. Sends S.">Save to flash</button>
+            <button id="btnSaveAcro" class="primary needs-conn" title="Persist the acrobot tuning (gains, signs, pump, plant, target) to the knob's NVS so it survives a power cycle. Sends S.">Save to flash</button>
           </div>
         </div>
 
@@ -1513,7 +1524,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 59, date: "2026-06-30" };
+const APP_BUILD = { ver: 60, date: "2026-06-30" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -3533,9 +3544,9 @@ const TUN_META = {
 // tuned magnitudes — a wrong slider range would clamp them).
 const TUN_LABELS = {};
 // Params with a bespoke control elsewhere — tracked in tunState but NOT given a
-// generic row. acarm → confirm-guarded ARM toggle; acsw → Swing-up toggle;
-// ak0..ak3 → Balance LQR gains; acpump → swing-up pump gain. All in the Acrobot card.
-const TUN_HIDDEN = new Set(["acarm", "acsw", "ak0", "ak1", "ak2", "ak3", "acpump"]);
+// generic row. acarm → ARM toggle; acsw → Swing-up toggle; actgt → LQR target
+// toggle; ak0..ak3 → Balance LQR gains; acpump → pump gain. All in the Acrobot card.
+const TUN_HIDDEN = new Set(["acarm", "acsw", "actgt", "ak0", "ak1", "ak2", "ak3", "acpump"]);
 // [TUN] carries no type metadata, so booleans are a UI-side known set — rendered
 // as a toggle that sends 1/0 instead of a slider. (Per FW: only usbhap today.)
 const TUN_BOOL = new Set(["usbhap"]);
@@ -3551,6 +3562,7 @@ function setTunParam(name, val) {
   if (TUN_HIDDEN.has(name)) {
     if (name === "acarm") syncAcroArm(val);
     else if (name === "acsw") syncAcroSwing(val);
+    else if (name === "actgt") syncAcroTarget(val);
     else if (/^ak[0-3]$/.test(name) || name === "acpump") syncAcroGain(name, val);
     return;
   }
@@ -4665,6 +4677,7 @@ function resetAcro() {
   const hp = document.getElementById("acroHangPill");
   if (hp) { hp.textContent = "HANG NOT SET"; hp.className = "pill bad"; }
   setAcroAxis(false);      // clear axis-cal status
+  setAcroTargetUI(false);  // back to the Hang default; [TUN] actgt= re-syncs on reconnect
   const sax = document.getElementById("btnAcroSwingAxis");
   if (sax) sax.disabled = true;   // re-gated until hang=1 after reconnect
   const sp = document.getElementById("acroSysPill");
@@ -4823,6 +4836,25 @@ function makeAcroGainRow(wrap, name, label, onChange) {
     });
   }
 })();
+
+// LQR target pose (actgt) — Upright ⇄ Hang toggle. Hang (180°) is the stable
+// pose for tuning gains / verifying signs; Upright (0°) is the real goal. Sends
+// `Cu actgt=0/180`; reconciles from the [TUN] actgt= echo. Defaults to Hang.
+const acroTargetChk = document.getElementById("acroTargetUpright");
+function setAcroTargetUI(upright) {
+  if (acroTargetChk && document.activeElement !== acroTargetChk) acroTargetChk.checked = upright;
+  const pill = document.getElementById("acroTargetPill");
+  if (pill) { pill.textContent = upright ? "target: upright" : "target: hang"; pill.className = upright ? "pill warn" : "pill"; }
+}
+if (acroTargetChk) acroTargetChk.addEventListener("change", () => {
+  const upright = acroTargetChk.checked;
+  tunState.actgt = upright ? 0 : 180;
+  pendingSends["__tun_actgt"] = { kind: "Cu", name: "actgt", val: upright ? 0 : 180 };
+  setAcroTargetUI(upright);
+  log(upright ? "LQR target → UPRIGHT (the real, unstable goal)."
+              : "LQR target → HANG (stable — for gain tuning).", "ok");
+});
+function syncAcroTarget(val) { setAcroTargetUI(Math.abs(val) < 90); }   // 0→upright, 180→hang
 
 // Swing-up enable — drives the firmware's acsw (0/1) flag directly. OFF =
 // balance-only (it only catches when you bring the bot near upright by hand);
