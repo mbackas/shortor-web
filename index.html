@@ -594,6 +594,7 @@
   #biasCanvas    { height: 60px; }
   #profileCanvas { height: 120px; }
   #acroCanvas    { height: 200px; }
+  #acroAnglesCanvas, #acroVelCanvas { height: 110px; }
   #ringCanvas {
     width: 100%;
     max-width: 190px;
@@ -612,6 +613,7 @@
     #biasCanvas    { height: 56px; }
     #profileCanvas { height: 110px; }
     #acroCanvas    { height: 180px; }
+    #acroAnglesCanvas, #acroVelCanvas { height: 96px; }
   }
 
   /* ── Stats ──────────────────────────────────────────── */
@@ -1335,6 +1337,10 @@
         </div>
         <div class="stat" style="margin-top: 6px;">pose — shoulder (amber) · elbow (blue); dashed = hang &amp; upright</div>
         <canvas id="acroCanvas" height="260"></canvas>
+        <div class="stat" style="margin-top: 8px;">filtered angles (°) — <span style="color:#7aa2ff">q1</span> · <span style="color:#ffb454">q2</span></div>
+        <canvas id="acroAnglesCanvas"></canvas>
+        <div class="stat" style="margin-top: 6px;">velocity estimates (°/s) — <span style="color:#7aa2ff">w1</span> · <span style="color:#ffb454">w2</span></div>
+        <canvas id="acroVelCanvas"></canvas>
 
         <!-- Balance LQR gains (ak0..ak3 = K·[q1, q1̇, q2, q2̇]). Moved here from the
              generic Tuning panel (TUN_HIDDEN) so they sit with the acrobot controls.
@@ -1524,7 +1530,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 60, date: "2026-06-30" };
+const APP_BUILD = { ver: 61, date: "2026-07-01" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -4592,6 +4598,32 @@ const acroCanvas = document.getElementById("acroCanvas");
 let   acroRaf    = 0;
 const acroState  = { q1: 0, q2: 0, hang: 0, valid: false };
 
+// Smoothing: the [ACRO] stream is only ~4 Hz, so the stick figure is eased
+// toward the latest sample every animation frame (~60 fps) via a continuous
+// loop while acrobot mode is active — no more 4 Hz stepping.
+let acroDispQ1 = 0, acroDispQ2 = 0;   // displayed (eased) angles, deg
+let acroAnimRaf = 0;
+const acroAngDelta = (from, to) => ((to - from + 540) % 360) - 180;   // shortest signed path
+function acroAnimLoop() {
+  const ease = 0.25;
+  acroDispQ1 += acroAngDelta(acroDispQ1, acroState.q1) * ease;
+  acroDispQ2 += acroAngDelta(acroDispQ2, acroState.q2) * ease;
+  drawAcro();
+  acroAnimRaf = requestAnimationFrame(acroAnimLoop);
+}
+function startAcroAnim() { if (!acroAnimRaf) acroAnimRaf = requestAnimationFrame(acroAnimLoop); }
+function stopAcroAnim()  { if (acroAnimRaf) { cancelAnimationFrame(acroAnimRaf); acroAnimRaf = 0; } }
+
+// Rolling plots: filtered angles (q1/q2) and velocity estimates (w1/w2), fed
+// from the ~4 Hz [ACRO] stream. ~40 s window.
+const ACRO_PLOT_LEN = 160, ACRO_PLOT_SPAN = 40;
+const acroQ1Buf = new Float32Array(ACRO_PLOT_LEN), acroQ2Buf = new Float32Array(ACRO_PLOT_LEN);
+const acroW1Buf = new Float32Array(ACRO_PLOT_LEN), acroW2Buf = new Float32Array(ACRO_PLOT_LEN);
+let acroPlotIdx = 0, acroAnglesRaf = 0, acroVelRaf = 0;
+const acroAnglesCanvas = document.getElementById("acroAnglesCanvas");
+const acroVelCanvas    = document.getElementById("acroVelCanvas");
+const ACRO_C1 = "#7aa2ff", ACRO_C2 = "#ffb454";   // q1/w1 blue, q2/w2 amber (match the links)
+
 // Reflect the plant state in the UI WITHOUT re-sending a command — called both
 // from the user toggle and from the authoritative [SYS] mode word.
 let _acroWasActive = false;
@@ -4603,6 +4635,7 @@ function setAcroActive(on) {
   if (body) body.hidden = !on;
   if (pill) { pill.textContent = on ? "ACRO" : "plant —"; pill.className = on ? "pill ok" : "pill"; }
   if (on && !acroRaf) acroRaf = requestAnimationFrame(drawAcro);   // canvas just un-hid
+  if (on) startAcroAnim(); else stopAcroAnim();   // run the smoothing loop only while active
   // On the cart→acro transition, re-pull the registry (Z): the acro-only
   // tunables (gains, acpump, acsw, signs) aren't in the connect-time dump while
   // the firmware is in cart mode, so without this their sliders stay blank until
@@ -4633,7 +4666,8 @@ function onAcro(hang, q1, w1, q2, w2, st) {
   if (sa) sa.disabled = !hang;
   if (!hang) setAcroAxis(false);
   if (st) setAcroState(st);
-  if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
+  pushAcroPlot(q1, q2, w1, w2);   // feed the filtered-angle + velocity plots
+  startAcroAnim();                // ensure the smoothing loop is running
 }
 
 // Task-state indicator from the [ACRO] st= field.
@@ -4688,6 +4722,13 @@ function resetAcro() {
   if (arm) arm.checked = false;
   setAcroArmPill(false);   // don't imply armed on a dead link; [TUN] re-syncs on reconnect
   _acroWasActive = false;  // so a reconnect into acro re-pulls the registry (Z)
+  // Stop the smoothing loop and blank the plots so a dropped link doesn't leave
+  // stale traces / a frozen pose on screen.
+  stopAcroAnim();
+  acroDispQ1 = 0; acroDispQ2 = 0;
+  acroQ1Buf.fill(0); acroQ2Buf.fill(0); acroW1Buf.fill(0); acroW2Buf.fill(0); acroPlotIdx = 0;
+  if (!acroAnglesRaf) acroAnglesRaf = requestAnimationFrame(drawAcroAngles);
+  if (!acroVelRaf)    acroVelRaf    = requestAnimationFrame(drawAcroVel);
   if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
 }
 
@@ -4720,8 +4761,8 @@ function drawAcro() {
     ctx.fillText("waiting for [ACRO] stream…", cx, cy);
     return;
   }
-  const phi1 = (acroState.q1 + 180) * Math.PI / 180;   // shoulder link, from upright (+180 → screen-down frame)
-  const phi2 = (acroState.q2 + 180) * Math.PI / 180;   // IMU link, from upright (+180 → screen-down frame)
+  const phi1 = (acroDispQ1 + 180) * Math.PI / 180;   // eased shoulder link, from upright (+180 → screen-down frame)
+  const phi2 = (acroDispQ2 + 180) * Math.PI / 180;   // eased IMU link, from upright (+180 → screen-down frame)
   const e1 = { x: cx + L1 * Math.sin(phi1), y: cy + L1 * Math.cos(phi1) };
   const e2 = { x: e1.x + L2 * Math.sin(phi2), y: e1.y + L2 * Math.cos(phi2) };
   ctx.lineCap = "round";
@@ -4735,6 +4776,47 @@ function drawAcro() {
   ctx.beginPath(); ctx.arc(cx, cy, 6 * dpr, 0, 7); ctx.stroke();
 }
 if (acroCanvas) { new ResizeObserver(drawAcro).observe(acroCanvas); drawAcro(); }
+
+// Two-trace rolling strip chart shared by the angle + velocity plots.
+function drawAcroSeries(canvas, bufs, colors, yRange, yUnit) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const dpr = devicePixelRatio || 1;
+  const w = canvas.width  = canvas.clientWidth  * dpr;
+  const h = canvas.height = canvas.clientHeight * dpr;
+  const ax = drawAxes(ctx, w, h, dpr, yRange, yUnit, ACRO_PLOT_SPAN);
+  for (let t = 0; t < bufs.length; t++) {
+    ctx.strokeStyle = colors[t]; ctx.lineWidth = 1 * dpr;
+    ctx.beginPath();
+    for (let i = 0; i < ACRO_PLOT_LEN; i++) {
+      const idx = (acroPlotIdx + i) % ACRO_PLOT_LEN;
+      const x = ax.plotX + (i * ax.plotW) / (ACRO_PLOT_LEN - 1);
+      const y = ax.yToPx(bufs[t][idx]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+}
+function drawAcroAngles() {
+  acroAnglesRaf = 0;
+  drawAcroSeries(acroAnglesCanvas, [acroQ1Buf, acroQ2Buf], [ACRO_C1, ACRO_C2], [-180, 180], "°");
+}
+function drawAcroVel() {
+  acroVelRaf = 0;
+  let maxAbs = 0;
+  for (let i = 0; i < ACRO_PLOT_LEN; i++) maxAbs = Math.max(maxAbs, Math.abs(acroW1Buf[i]), Math.abs(acroW2Buf[i]));
+  const yr = Math.max(60, niceCeil(maxAbs));   // auto-scale with a 60 °/s floor
+  drawAcroSeries(acroVelCanvas, [acroW1Buf, acroW2Buf], [ACRO_C1, ACRO_C2], [-yr, yr], "°/s");
+}
+function pushAcroPlot(q1, q2, w1, w2) {
+  acroQ1Buf[acroPlotIdx] = q1; acroQ2Buf[acroPlotIdx] = q2;
+  acroW1Buf[acroPlotIdx] = w1; acroW2Buf[acroPlotIdx] = w2;
+  acroPlotIdx = (acroPlotIdx + 1) % ACRO_PLOT_LEN;
+  if (!acroAnglesRaf) acroAnglesRaf = requestAnimationFrame(drawAcroAngles);
+  if (!acroVelRaf)    acroVelRaf    = requestAnimationFrame(drawAcroVel);
+}
+if (acroAnglesCanvas) { new ResizeObserver(drawAcroAngles).observe(acroAnglesCanvas); drawAcroAngles(); }
+if (acroVelCanvas)    { new ResizeObserver(drawAcroVel).observe(acroVelCanvas);       drawAcroVel(); }
 
 // Plant toggle — sends Cu plant=1/0; reverts if offline or the write fails.
 const acroPlantEl = document.getElementById("acroPlant");
@@ -4902,7 +4984,9 @@ if (acroArmEl) acroArmEl.onchange = (e) => {
 };
 
 const secAcroEl = document.getElementById("secAcro");
-if (secAcroEl) secAcroEl.addEventListener("toggle", () => { if (secAcroEl.open) drawAcro(); });
+if (secAcroEl) secAcroEl.addEventListener("toggle", () => {
+  if (secAcroEl.open) { drawAcro(); drawAcroAngles(); drawAcroVel(); }
+});
 
 // Canvases inside a collapsed <details> have zero client size, so they
 // can't render until the section is first opened. Force a redraw on open
