@@ -1,5 +1,14 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-06-30 — `GA` swing-axis cal button + 2-step cal status (build 1231)
+> Added a **Calibrate swing axis** button (sends `GA`) next to Calibrate hanging zero, with a
+> "hold horizontal ~90°, after hanging cal" hint. Actioned both nice-to-haves: the button is
+> **greyed out until `hang=1`**, and there's now a **Hang ✓ / Axis ✓** status pair (pills
+> `HANG NOT SET`→`hang set`, `AXIS NOT SET`→`axis set`). Axis pill flips on the
+> `[GRAV] swing AXIS=…` reply; rejection lines (`GA needs GH` / `GA rejected…`) echo to the
+> console and leave it unset. Axis clears if the hang datum is lost. Also added a **Save to
+> flash** button under the acrobot gains (`S`). Wire format unchanged (`hang= st= q2= w2= sh= wsh=`).
+
 > ## Update 2026-06-29 (eve) — Swing-up toggle now drives `acsw` (your new flag)
 > Repointed the **Swing-up enabled** toggle to send **`Cu acsw=1/0`** directly (was gating
 > `acpump=0`). OFF = balance-only. Reconciles from the `[TUN] acsw=` echo. `acpump` is now an

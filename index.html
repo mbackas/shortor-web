@@ -1318,15 +1318,20 @@
         <div class="row" style="margin-bottom: 8px;">
           <span id="acroSysPill" class="pill" title="Confirms the plant switch — reads ACRO once firmware is in acrobot mode ([SYS] mode word)">plant —</span>
           <span id="acroStatePill" class="pill" title="Controller task state (st): off = disarmed, swing-up = pumping energy in, balancing = holding at the top">task: —</span>
-          <span id="acroHangPill" class="pill bad" title="Hanging-zero datum — run Calibrate hanging zero before the angles can be trusted">HANG NOT SET</span>
+          <span id="acroHangPill" class="pill bad" title="Hang cal (GH) — step 1 of 2. Run Calibrate hanging zero before the angles can be trusted">HANG NOT SET</span>
+          <span id="acroAxisPill" class="pill bad" title="Swing-axis cal (GA) — step 2 of 2, needed by the estimator's complementary filter. Run Calibrate swing axis after the hang cal">AXIS NOT SET</span>
           <span id="acroQ1" class="pill live" title="Shoulder-link angle, UI-derived as q1 = q2 + sh (shaft), measured from UPRIGHT — 0 upright, ±180 hanging (= q2 when elbow is straight)">q1 = —</span>
           <span id="acroW1" class="pill live" title="Shoulder-link angular rate (°/s)">w1 = —</span>
           <span id="acroQ2" class="pill live" title="IMU-link angle measured from UPRIGHT — 0 upright, ±180 hanging (cal/hang pose = 180°)">q2 = —</span>
           <span id="acroW2" class="pill live" title="IMU-link angular rate (°/s)">w2 = —</span>
         </div>
-        <div class="row" style="margin-bottom: 8px;">
+        <div class="row" style="margin-bottom: 4px;">
           <button id="btnAcroHang" class="primary needs-conn" title="Hang the robot straight down, then press — firmware window-averages the accel and stores the hang datum + latches the elbow-encoder zero (GH). Auto-saves.">Calibrate hanging zero</button>
-          <span class="stat" style="font-size: 11px;">Hang the robot straight down, then press.</span>
+          <span class="stat" style="font-size: 11px;">Hang straight down, then press.</span>
+        </div>
+        <div class="row" style="margin-bottom: 8px;">
+          <button id="btnAcroSwingAxis" class="needs-conn" disabled title="Hold the link HORIZONTAL (~90° from hang), then press — firmware computes the swing axis (axle = hang × horizontal) for the complementary filter (GA). Enabled once the hang cal is set.">Calibrate swing axis</button>
+          <span class="stat" style="font-size: 11px;">Hold horizontal (~90°), then press — after hanging cal.</span>
         </div>
         <div class="stat" style="margin-top: 6px;">pose — shoulder (amber) · elbow (blue); dashed = hang &amp; upright</div>
         <canvas id="acroCanvas" height="260"></canvas>
@@ -1340,6 +1345,9 @@
         <div class="acro-gains" style="margin-top: 12px;">
           <div class="stat" style="margin-bottom: 6px;">balance LQR gains &nbsp;·&nbsp; K = [q1, q1̇, q2, q2̇]</div>
           <div id="acroGains"></div>
+          <div class="row" style="margin-top: 8px;">
+            <button id="btnSaveAcro" class="primary needs-conn" title="Persist the acrobot tuning (gains, signs, pump, plant) to the knob's NVS so it survives a power cycle. Sends S.">Save to flash</button>
+          </div>
         </div>
 
         <!-- Swing-up enable — drives the firmware acsw (0/1) flag. OFF = balance-
@@ -1505,7 +1513,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 58, date: "2026-06-30" };
+const APP_BUILD = { ver: 59, date: "2026-06-30" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2331,6 +2339,11 @@ class BleTransport {
         if (text && /^\[MODE\]/i.test(text)) {
           setDampedState(/\bDAMPED\b/i.test(text));
           // fall through so the transition still echoes to the console
+        }
+        // [GRAV] swing AXIS=… confirms the GA swing-axis cal → flip the Axis pill.
+        // (Rejection lines "GA needs GH" / "GA rejected…" fall through to echo.)
+        if (text && /^\[GRAV\]/i.test(text) && /swing\s+AXIS=/i.test(text)) {
+          setAcroAxis(true);
         }
         // [ACRO] hang=<0|1> st=<off|swing|bal> q2=<deg> w2=<deg/s> sh=<deg> wsh=<deg/s>
         // — ~4 Hz acrobot readout (plant=1). Firmware sends RAW primitives now
@@ -3870,6 +3883,7 @@ async function saveToFlash(what) {
 document.getElementById("btnSave").onclick = () => saveToFlash("params");
 document.getElementById("btnSaveBalance").onclick = () => saveToFlash("balancing params");
 document.getElementById("btnSaveTun").onclick = () => saveToFlash("tunables");
+document.getElementById("btnSaveAcro").onclick = () => saveToFlash("acrobot params");
 document.getElementById("btnForget").onclick = async () => {
   if (!transport) return log("Not connected.", "bad");
   if (!confirm("Reset tuning? The knob will discard its saved params and boot from firmware defaults next power-up.")) return;
@@ -4601,6 +4615,11 @@ function onAcro(hang, q1, w1, q2, w2, st) {
     if (hang) { hp.textContent = "hang set"; hp.className = "pill ok"; }
     else      { hp.textContent = "HANG NOT SET"; hp.className = "pill bad"; }
   }
+  // Swing-axis cal (GA) requires the hang cal first — grey the button until hang=1,
+  // and drop the axis status if the hang datum is lost (axis would be invalid).
+  const sa = document.getElementById("btnAcroSwingAxis");
+  if (sa) sa.disabled = !hang;
+  if (!hang) setAcroAxis(false);
   if (st) setAcroState(st);
   if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
 }
@@ -4616,6 +4635,12 @@ function setAcroState(st) {
   };
   const [txt, cls] = map[st] || [`task: ${st}`, "pill"];
   pill.textContent = txt; pill.className = cls;
+}
+
+// Swing-axis cal status — set from the [GRAV] swing AXIS= reply (GA success).
+function setAcroAxis(ok) {
+  const pill = document.getElementById("acroAxisPill");
+  if (pill) { pill.textContent = ok ? "axis set" : "AXIS NOT SET"; pill.className = ok ? "pill ok" : "pill bad"; }
 }
 
 // ARM gate (acarm). DISARMED = neutral; ARMED = amber (live/energized).
@@ -4639,6 +4664,9 @@ function resetAcro() {
   set("acroQ2",  "q2 = —");  set("acroW2", "w2 = —");
   const hp = document.getElementById("acroHangPill");
   if (hp) { hp.textContent = "HANG NOT SET"; hp.className = "pill bad"; }
+  setAcroAxis(false);      // clear axis-cal status
+  const sax = document.getElementById("btnAcroSwingAxis");
+  if (sax) sax.disabled = true;   // re-gated until hang=1 after reconnect
   const sp = document.getElementById("acroSysPill");
   if (sp) { sp.textContent = "plant —"; sp.className = "pill"; }
   const stp = document.getElementById("acroStatePill");
@@ -4721,6 +4749,16 @@ if (btnAcroHang) btnAcroHang.onclick = async () => {
   if (!transport || !transport.isConnected()) return log("Not connected.", "bad");
   try { await transport.writeCmd("GH\n"); log("Calibrating hanging zero — hold the bot hanging straight down…", "ok"); }
   catch (e) { log("Hang cal failed: " + errMsg(e), "bad"); }
+};
+
+const btnAcroSwingAxis = document.getElementById("btnAcroSwingAxis");
+if (btnAcroSwingAxis) btnAcroSwingAxis.onclick = async () => {
+  if (!transport || !transport.isConnected()) return log("Not connected.", "bad");
+  // GA computes the swing axis (axle = hang × horizontal) for the complementary
+  // filter; must follow GH. FW replies [GRAV] swing AXIS=… or a rejection line,
+  // which echo to the console.
+  try { await transport.writeCmd("GA\n"); log("Calibrating swing axis — hold the link horizontal (~90° from hang)…", "ok"); }
+  catch (e) { log("Swing-axis cal failed: " + errMsg(e), "bad"); }
 };
 
 // Balance LQR gains (ak0..ak3) — bespoke sliders in the Acrobot card, hidden from
