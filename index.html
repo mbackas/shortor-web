@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <title>Shortor Knob</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0a0e10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
 /* ===== Embedded fonts (offline-safe, no CDN) ===== */
 @font-face{font-family:;font-style:normal;font-weight:600;font-display:swap;src:url(data:font/woff2;base64,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) format(woff2);}
@@ -362,7 +365,7 @@
     flex-direction: column;
     gap: var(--gap);
     padding: 14px 12px 4px;
-    max-width: 840px;
+    max-width: 980px;
     margin: 0 auto;
   }
   @media (max-width: 880px) {
@@ -783,6 +786,38 @@
   .preset-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
   .preset-row button { padding: 4px 9px; font-size: 11px; min-height: 24px; }
 
+  /* ── Dashboard — the default (user) view ────────────── */
+  /* One card holding everything a non-developer needs: the live digital
+     twin (cart ⇄ acrobot), the practice ring, the feel sliders, the cart
+     setpoint, and presets/save. Desktop: twin left, controls right.
+     Mobile: stacked, twin first. */
+  .dash-grid { display: grid; gap: 14px; }
+  @media (min-width: 880px) {
+    .dash-grid { grid-template-columns: 1.05fr 1fr; align-items: start; }
+  }
+  #dashboard #balanceCanvas { height: 190px; }
+  #dashboard #acroCanvas    { height: 220px; }
+  @media (max-width: 720px) {
+    #dashboard #balanceCanvas { height: 150px; }
+    #dashboard #acroCanvas    { height: 190px; }
+  }
+  .dash-ring { margin-top: 12px; text-align: center; }
+  .dash-ring .help { margin: 6px 0 0; }
+  #dashSetpoint { margin-top: 2px; }
+
+  /* ── Developer-view gate ────────────────────────────── */
+  /* Everything bench-only (calibration, probe sweep, tuning registry,
+     diagnostics, firmware/OTA) is .dev-only — hidden until the header
+     DEV toggle flips body.dev. Persisted in localStorage. */
+  body:not(.dev) .dev-only { display: none !important; }
+  #btnDevMode { font-size: 10px; padding: 4px 8px; color: var(--muted); }
+  body.dev #btnDevMode {
+    color: var(--cyan);
+    border-color: rgba(70,214,196,0.45);
+    background: rgba(70,214,196,0.07);
+    box-shadow: 0 0 10px -4px rgba(70,214,196,0.6);
+  }
+
   /* ── Console ────────────────────────────────────────── */
   #console {
     margin: 0;
@@ -1167,7 +1202,8 @@
     <span id="appVer" class="ver" title="Web-app version — auto-incremented every commit"></span>
     <span id="status" class="pill bad">Disconnected</span>
     <span class="hdr-grow"></span>
-    <select id="transport" aria-label="Transport">
+    <button id="btnDevMode">Dev</button>
+    <select id="transport" aria-label="Transport" class="dev-only">
       <option value="ble">BLE GATT</option>
       <option value="serial">USB Serial</option>
     </select>
@@ -1196,43 +1232,55 @@
     connection.
   </div>
 
-  <!-- HERO: everyday tuning -->
-  <section class="card">
-    <h2>Tune</h2>
-    <label class="toggle">
-      <input type="checkbox" id="momentumOn">
-      <span>Momentum (virtual flywheel)</span>
-    </label>
-    <div id="sliders"></div>
-    <div class="preset-row" id="presets"></div>
-    <div class="preset-row" style="margin-top: 4px;">
-      <button id="btnSavePreset" class="needs-conn">Save preset…</button>
-      <button id="btnResetPresets" class="needs-conn">Reset presets</button>
+  <!-- HERO: the default user view. Digital twin + the user-relevant
+       controls (feel sliders, cart setpoint, presets, save). Everything
+       bench/developer lives in the .dev-only cards below (DEV toggle). -->
+  <section class="card" id="dashboard">
+    <h2>Control</h2>
+    <div class="dash-grid">
+      <div class="dash-twin">
+        <div class="stat" id="twinCap" style="margin-bottom: 6px;">digital twin — balance cart · live</div>
+        <div id="twinBal">
+          <canvas id="balanceCanvas" height="200"></canvas>
+        </div>
+        <div id="twinAcro" hidden>
+          <canvas id="acroCanvas" height="260"></canvas>
+        </div>
+        <div class="stat" id="balanceInfo" style="margin-top: 6px;"></div>
+        <div class="dash-ring">
+          <canvas id="ringCanvas" width="280" height="280"></canvas>
+          <p class="help">The dial mirrors the knob live — hover &amp; scroll inside it to practice.</p>
+        </div>
+      </div>
+      <div class="dash-controls">
+        <label class="toggle">
+          <input type="checkbox" id="momentumOn">
+          <span>Momentum (virtual flywheel)</span>
+        </label>
+        <div id="sliders"></div>
+        <div id="dashSetpoint"></div>
+        <div class="preset-row" id="presets"></div>
+        <div class="preset-row" style="margin-top: 4px;">
+          <button id="btnSavePreset">Save preset…</button>
+          <button id="btnResetPresets">Reset presets</button>
+        </div>
+        <div class="row" style="margin-top: 12px;">
+          <button id="btnSave" class="primary needs-conn">Save to knob</button>
+          <button id="btnForget" class="needs-conn">Reset tuning</button>
+        </div>
+        <p class="help" style="margin: 8px 0 0;">Sliders push live to the knob as you move them; <b>Save to knob</b> persists them to its memory so they survive a power cycle. Presets are stored on the knob too.</p>
+      </div>
     </div>
-    <div class="row" style="margin-top: 12px;">
-      <button id="btnSave" class="primary needs-conn">Save to knob</button>
-      <button id="btnForget" class="needs-conn">Reset tuning</button>
-    </div>
-    <p class="help" style="margin: 8px 0 0;">Sliders push live to the knob as you move them; <b>Save to knob</b> persists them to its memory so they survive a power cycle. Presets are stored on the knob too.</p>
   </section>
 
-  <section class="card">
+  <section class="card dev-only">
     <h2>Haptic profile preview</h2>
     <canvas id="profileCanvas" height="200"></canvas>
     <div class="stat" id="profileInfo" style="margin-top: 8px;"></div>
   </section>
 
-  <section class="card">
-    <h2>Scroll practice ring</h2>
-    <p class="help" style="margin-bottom: 10px;">
-      Hover and scroll inside the ring to feel the knob without
-      scrolling the rest of the page.
-    </p>
-    <canvas id="ringCanvas" width="280" height="280"></canvas>
-  </section>
-
   <!-- Secondary mode -->
-  <details class="card" id="secBalance">
+  <details class="card dev-only" id="secBalance">
     <summary>Balancing <span class="sub">upright mode</span></summary>
     <div class="body">
       <p class="help">
@@ -1293,8 +1341,7 @@
       <div class="row" style="margin-top: 12px;">
         <button id="btnSaveBalance" class="primary needs-conn">Save to flash</button>
       </div>
-      <canvas id="balanceCanvas" height="200" style="margin-top: 12px;"></canvas>
-      <div class="stat" id="balanceInfo" style="margin-top: 6px;"></div>
+      <!-- balanceCanvas/balanceInfo moved to the dashboard (digital twin) -->
       <canvas id="biasCanvas" height="100" style="margin-top: 10px;"></canvas>
       <div class="stat" id="biasInfo" style="margin-top: 6px;">tbias = —</div>
     </div>
@@ -1303,7 +1350,7 @@
   <!-- Acrobot — 2-link swing-up/balance plant (additive). See forUIfromFW_acrobot.md.
        Foundation only: plant switch + hanging-zero cal + estimator readout.
        The acrobot holds zero torque in firmware; no control UI yet. -->
-  <details class="card" id="secAcro">
+  <details class="card dev-only" id="secAcro">
     <summary>Acrobot <span class="sub">2-link mode</span></summary>
     <div class="body">
       <label class="toggle">
@@ -1335,8 +1382,8 @@
           <button id="btnAcroSwingAxis" class="needs-conn" disabled title="Hold the link HORIZONTAL (~90° from hang), then press — firmware computes the swing axis (axle = hang × horizontal) for the complementary filter (GA). Enabled once the hang cal is set.">Calibrate swing axis</button>
           <span class="stat" style="font-size: 11px;">Hold horizontal (~90°), then press — after hanging cal.</span>
         </div>
-        <div class="stat" style="margin-top: 6px;">pose — shoulder (amber) · elbow (blue); dashed = hang &amp; upright</div>
-        <canvas id="acroCanvas" height="260"></canvas>
+        <!-- acroCanvas (2-link stick figure) moved to the dashboard twin —
+             shoulder amber, elbow blue; dashed refs = hang & upright -->
         <div class="stat" style="margin-top: 8px;">filtered angles (°) — <span style="color:#7aa2ff">q1</span> · <span style="color:#ffb454">q2</span></div>
         <canvas id="acroAnglesCanvas"></canvas>
         <div class="stat" style="margin-top: 6px;">velocity estimates (°/s) — <span style="color:#7aa2ff">w1</span> · <span style="color:#ffb454">w2</span></div>
@@ -1403,7 +1450,7 @@
   </details>
 
   <!-- Self-describing live-tunable registry (Cu / [TUN]) -->
-  <details class="card" id="secTune">
+  <details class="card dev-only" id="secTune">
     <summary>Tuning <span class="sub">live registry</span></summary>
     <div class="body">
       <p class="help">
@@ -1423,7 +1470,7 @@
   </details>
 
   <!-- Live instrumentation + dev tools -->
-  <details class="card" id="secDiag">
+  <details class="card dev-only" id="secDiag">
     <summary>Diagnostics <span class="sub">live data &amp; console</span></summary>
     <div class="body">
       <div class="row" style="margin-bottom: 8px;">
@@ -1451,7 +1498,7 @@
   </details>
 
   <!-- Firmware / OTA (rare, expert) -->
-  <details class="card" id="secFw">
+  <details class="card dev-only" id="secFw">
     <summary>Firmware update <span class="sub">OTA</span></summary>
     <div class="body">
       <p class="help">
@@ -1530,7 +1577,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // sequential commit ordinal, bumped on every commit; date is the commit
 // day. Drives the header version readout and the background tint, which
 // cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 61, date: "2026-07-01" };
+const APP_BUILD = { ver: 62, date: "2026-07-17" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2690,6 +2737,27 @@ const transportSel = document.getElementById("transport");
   document.documentElement.style.setProperty("--tint", APP_TINTS[APP_BUILD.ver % APP_TINTS.length]);
 })();
 
+// ─── View mode: user dashboard (default) vs developer bench ────────────────
+// The default view is the single-page dashboard (digital twin + user
+// controls). The DEV header toggle reveals the bench cards (.dev-only):
+// calibration, probe sweep, tuning registry, diagnostics, firmware/OTA.
+// Persisted so a developer stays in dev view across reloads.
+const DEVMODE_LS = "shortor_devmode";
+const btnDevMode = document.getElementById("btnDevMode");
+function setDevMode(on, persist = true) {
+  document.body.classList.toggle("dev", !!on);
+  if (btnDevMode) btnDevMode.title = on
+    ? "Developer view ON — click to return to the simple view."
+    : "Show the developer bench — calibration, diagnostics, tuning registry & firmware.";
+  if (persist) { try { localStorage.setItem(DEVMODE_LS, on ? "1" : "0"); } catch (e) {} }
+}
+if (btnDevMode) btnDevMode.onclick = () => setDevMode(!document.body.classList.contains("dev"));
+(() => {
+  let on = false;
+  try { on = localStorage.getItem(DEVMODE_LS) === "1"; } catch (e) {}
+  setDevMode(on, false);
+})();
+
 function setStatus(ok, name) {
   document.body.classList.toggle("connected", !!ok);   // drives connect-hint + .needs-conn gating
   const flashBtn = document.getElementById("btnFlash");
@@ -3753,6 +3821,9 @@ setInterval(() => { verifyGains().catch(() => {}); }, 5000);
 
 // ─── Balancer sliders + calibration ─────────────────────────────────────────
 const lqrSlidersEl   = document.getElementById("lqrSliders");
+// Cart setpoint is a user-facing control — its row lands on the dashboard
+// next to the digital twin; gains/cutoffs stay in the dev Balancing card.
+const dashSetpointEl = document.getElementById("dashSetpoint");
 const lqrSliderEls   = {};
 const lqrValueEls    = {};
 const lqrState       = Object.fromEntries(LQR_PARAMS.map(p => [p.key, p.def]));
@@ -3768,7 +3839,7 @@ for (const p of LQR_PARAMS) {
   // lqrState always stores the actual value (Hz, rad/s, …).
   sld.value = lpfSliderOf(p, lqrState[p.key]);
   row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
-  lqrSlidersEl.appendChild(row);
+  ((p.key === "x_ref" && dashSetpointEl) ? dashSetpointEl : lqrSlidersEl).appendChild(row);
   lqrSliderEls[p.key] = sld; lqrValueEls[p.key] = val;
   val.textContent = p.fmt(lpfValueOf(p, parseFloat(sld.value)));
   sld.addEventListener("input", () => {
@@ -4624,6 +4695,20 @@ const acroAnglesCanvas = document.getElementById("acroAnglesCanvas");
 const acroVelCanvas    = document.getElementById("acroVelCanvas");
 const ACRO_C1 = "#7aa2ff", ACRO_C2 = "#ffb454";   // q1/w1 blue, q2/w2 amber (match the links)
 
+// Dashboard digital-twin swap: the twin slot shows the balance cart by
+// default and the 2-link acrobot stick figure while the firmware is in the
+// acrobot plant. Wrappers (not the canvases) carry `hidden` — the authored
+// `canvas { display:block }` rule would override the hidden attribute.
+function setTwinPlant(acro) {
+  const tb = document.getElementById("twinBal"), ta = document.getElementById("twinAcro");
+  if (tb) tb.hidden = !!acro;
+  if (ta) ta.hidden = !acro;
+  const cap = document.getElementById("twinCap");
+  if (cap) cap.textContent = acro
+    ? "digital twin — acrobot (2-link) · live"
+    : "digital twin — balance cart · live";
+}
+
 // Reflect the plant state in the UI WITHOUT re-sending a command — called both
 // from the user toggle and from the authoritative [SYS] mode word.
 let _acroWasActive = false;
@@ -4634,6 +4719,7 @@ function setAcroActive(on) {
   if (cb)   cb.checked = on;
   if (body) body.hidden = !on;
   if (pill) { pill.textContent = on ? "ACRO" : "plant —"; pill.className = on ? "pill ok" : "pill"; }
+  setTwinPlant(on);
   if (on && !acroRaf) acroRaf = requestAnimationFrame(drawAcro);   // canvas just un-hid
   if (on) startAcroAnim(); else stopAcroAnim();   // run the smoothing loop only while active
   // On the cart→acro transition, re-pull the registry (Z): the acro-only
@@ -4722,6 +4808,7 @@ function resetAcro() {
   if (arm) arm.checked = false;
   setAcroArmPill(false);   // don't imply armed on a dead link; [TUN] re-syncs on reconnect
   _acroWasActive = false;  // so a reconnect into acro re-pulls the registry (Z)
+  setTwinPlant(false);     // twin back to the cart view; [SYS] ACRO re-swaps on reconnect
   // Stop the smoothing loop and blank the plots so a dropped link doesn't leave
   // stale traces / a frozen pose on screen.
   stopAcroAnim();
