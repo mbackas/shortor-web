@@ -1199,7 +1199,7 @@
 <header>
   <div class="hdr-brand">
     <h1>Shortor Knob</h1>
-    <span id="appVer" class="ver" title="Web-app version — auto-incremented every commit"></span>
+    <span id="appVer" class="ver" title="Deployed commit id — stamped by the Pages deploy workflow (local copies show <parent-hash>+)"></span>
     <span id="status" class="pill bad">Disconnected</span>
     <span class="hdr-grow"></span>
     <button id="btnDevMode">Dev</button>
@@ -1573,11 +1573,14 @@ window.addEventListener("unhandledrejection", (e) => {
   _surfaceErr("Promise rejected: " + (r && r.message ? r.message : r));
 });
 
-// Auto-stamped by the pre-commit hook (.git/hooks/pre-commit): ver is the
-// sequential commit ordinal, bumped on every commit; date is the commit
-// day. Drives the header version readout and the background tint, which
-// cycles red→green→blue by ver%3 so each update is visually distinct.
-const APP_BUILD = { ver: 62, date: "2026-07-17" };
+// Build identity. The GitHub Pages deploy workflow (.github/workflows/
+// pages.yml) stamps the EXACT commit id + day at deploy time, so the hosted
+// page always names the commit it was built from. The local pre-commit hook
+// stamps a "<parent-hash>+" fallback (a committed file can't contain its own
+// hash) for offline/local copies. Drives the header readout and the
+// background tint, which cycles red→green→blue per build so each update is
+// visually distinct.
+const APP_BUILD = { id: "65126d7+", date: "2026-07-17" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2733,8 +2736,11 @@ const transportSel = document.getElementById("transport");
 // background tint (red→green→blue by ver%3).
 (() => {
   const v = document.getElementById("appVer");
-  if (v) v.textContent = `v${APP_BUILD.ver} · ${APP_BUILD.date}`;
-  document.documentElement.style.setProperty("--tint", APP_TINTS[APP_BUILD.ver % APP_TINTS.length]);
+  if (v) v.textContent = `${APP_BUILD.id} · ${APP_BUILD.date}`;
+  // Tint index derived from the commit id so it still cycles per build.
+  let t = 0;
+  for (const c of APP_BUILD.id) t = (t + c.charCodeAt(0)) % APP_TINTS.length;
+  document.documentElement.style.setProperty("--tint", APP_TINTS[t]);
 })();
 
 // ─── View mode: user dashboard (default) vs developer bench ────────────────

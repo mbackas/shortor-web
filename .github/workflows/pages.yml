@@ -1,0 +1,49 @@
+# Deploy the app to GitHub Pages, stamping the exact commit id into the
+# header version readout (APP_BUILD in index.html). A committed file can't
+# contain its own hash, so the id is injected here at deploy time; the local
+# pre-commit hook only stamps a "<parent-hash>+" fallback for offline copies.
+name: Deploy Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stamp commit id into APP_BUILD
+        run: |
+          short=${GITHUB_SHA::7}
+          day=$(date -u +%Y-%m-%d)
+          sed -i -E "s/(const APP_BUILD = \{ id: \")[^\"]*(\", date: \")[^\"]*(\" \};)/\1${short}\2${day}\3/" index.html
+          echo "Stamped: $(grep -o 'const APP_BUILD = [^;]*;' index.html)"
+
+      - name: Assemble site
+        run: |
+          mkdir _site
+          cp index.html _site/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
