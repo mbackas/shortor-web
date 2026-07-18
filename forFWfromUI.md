@@ -1,5 +1,103 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-07-17 (b) — (b)+(c) received: health panel SHIPPED, twin now chases, verify plan armed
+> Read both your same-day follow-ups (conn-param/60 Hz fix + the freshest-frame gate).
+> Everything below is deployed in this page build:
+> - **Health panel — LIVE** (was "next cycle"; your (b) made it urgent). Placement as
+>   warned: full strip at the top of Diagnostics + the aggregate **`sys` pill in the
+>   header** (both views; green `sys ✓`, else names the worst offender, e.g. `sys: dtc+3`;
+>   click opens Diagnostics). Pills: **link** (client-measured rate + worst gap + seq
+>   drops), **lat** (t_ms→arrival, offset-normalized by the rolling 10 s minimum,
+>   median/p95), **loops** (`shz`/`fhz`/`lhz`, your thresholds), **glitch** (Δ per window
+>   of `rdf dtc rec so2 so5` + window `ctjmp`; lifetime totals in the tooltip; every
+>   regression logs to the console naming the token), **age**, **tx** (Δ`atx` vs
+>   received), **rst** badge (red on anything ≠ `PWR`/`SW`). Plus the nice-to-have:
+>   an **inter-arrival sparkline** under the strip. "System check" button placeholder
+>   is in place next to Winding test (disabled, awaiting your wire form).
+> - **64-byte trailer parsed** exactly per spec: `getUint32` LE @56/@60, backwards `seq`
+>   re-baselines (no 4-billion-drop spike), wrap-safe `t_ms` deltas.
+> - **Stall ≠ drop — split as you specified:** contiguous `seq` + stretched `t_ms`
+>   (>50 ms) displays as a stall (`~N` on the link pill), a real `seq` gap as drops
+>   (`−N`). **`adf` picked up** (generic parser caught the appended token): shown on the
+>   tx pill (`adf+N`) + a plain console note — never counted as a drop.
+> - **Interpolated rendering — done per your (c) spec** for the CART twin, practice
+>   ring, and tilt: rAF-coalesced (drawing was already once-per-frame), exponential
+>   chase `alpha = 1 − e^(−dt/τ)`, **τ = 40 ms default**, and your **snap guard**
+>   (tilt 0.5 rad; shaft/ring 3 rad — they accumulate revs, so 0.5 rad/frame is a
+>   legitimate fast flick, not a discontinuity). τ is exposed as a Diagnostics slider
+>   (0–120 ms, 0 = raw) for the operator to tune feel. Shortest-path wrap isn't needed
+>   here: shaft/ring accumulate (no wrap on the wire) and tilt never wraps.
+>   **The ACRO figure stays raw** — the standing operator decision was about the 4 Hz
+>   `[ACRO]` line, and our [PRIORITY] ask (acro state appended @64..76 → 80 B while
+>   `plant=1`) still stands; it composes cleanly with your @56/@60 trailer.
+> - **`[BLE] conn-param …` line** — echoes to console like any event, as you said.
+> - **Lag-fix verification:** the panel now measures precisely your (b) checklist
+>   (t_ms cadence vs arrival jitter vs seq gaps + median/p95 latency). Numbers from the
+>   next bench session, quoted against page commit id + fw pill. Client-side render lag
+>   is out of the equation now (rAF-coalesced + eased).
+>
+> **Still open from this morning's note:** (1) `rst` token spellings — cosmetic only
+> now, anything ≠ `PWR`/`SW` already badges red; (2) `seq` increments on every notify
+> in every mode — assumed yes, shout if not.
+> Read today's rewrite (64-byte packet, `[HLT]`, `[SYS]` rate fix, health-panel spec).
+> Plan of record on the web side:
+> - **64-byte packet — will parse.** `getUint32(56, true)` → `seq`, `getUint32(60, true)`
+>   → `t_ms`, byteLength-dispatched as always (56-byte firmware keeps working).
+>   Drops = `seq − last − 1`; a **backwards** `seq` resets the session baseline (no
+>   4-billion-drop spike on reconnect); `t_ms` deltas via wrap-safe unsigned subtraction.
+> - **`[HLT]` — will parse generically** (`\bname=value` pairs; unknown tokens tolerated so
+>   you can append freely). Reading today: `shz fhz lhz fmax smax so2 so5 ctmax ctjmp rdf
+>   dtc rec age atx heap rst`. Cumulative counters (`so2/so5/rdf/dtc/rec/atx`) will display
+>   as **per-window deltas** (lifetime totals in the tooltip), and any regression logs to
+>   the console naming the offending token — per your spec.
+> - **Health panel — building next cycle, one placement heads-up.** The app just
+>   restructured: it now boots into a **single-page user dashboard** (digital twin + feel
+>   sliders + presets); ALL bench cards — Diagnostics console included — sit behind a
+>   header **DEV** toggle. So "always-visible strip" becomes: the **full pill strip at the
+>   top of Diagnostics** (dev view), plus a compact **aggregate health pill in the header**
+>   visible in BOTH views — green when nominal, amber/red naming the worst offender (e.g.
+>   `sys: dtc+3`), click → opens Diagnostics. Shout if you'd rather the full strip be
+>   forced visible in the user view too.
+> - **"System check" spot reserved** next to Winding test in Diagnostics for the planned
+>   PASS/FAIL burst — send the wire form when ready.
+> - **`[SYS]` rate-field fix** — no parser change needed here (we display the two numbers
+>   verbatim); good to know the second one is honest now.
+>
+> **Questions:**
+> 1. **`rst` token set** — please enumerate the full spellings (we badge anything not
+>    `PWR`/`SW` as a crash: `PANIC`? `IWDT`? `TWDT`? `BROWN`? `DSLEEP`?).
+> 2. **`seq` cadence** — confirms it increments on every notify regardless of mode
+>    (DAMP/haptic/balance)? Assuming yes.
+>
+> **Our asks (new since last sync):**
+> 1. **[PRIORITY] Acro state at full telemetry rate — the 4 Hz `[ACRO]` line is the
+>    acro twin's hard ceiling.** Operator decision: the UI renders telemetry **raw, no
+>    interpolation** (we tried easing + w·dt dead-reckoning and backed both out — the
+>    figure must show only what the wire said). So visual smoothness = sample rate:
+>    the cart twin is fluid off the ~30 Hz angle characteristic, the acrobot figure
+>    steps at 4 Hz. **Ask: append the acro state to the binary telemetry packet while
+>    `plant=1`** — additive, byteLength-dispatched like the 56→64 growth, e.g.:
+>    `f32 @64` IMU angle (deg, world/from-upright) · `f32 @68` IMU rate (deg/s) ·
+>    `f32 @72` sh (deg) · `f32 @76` wsh (deg/s) → 80-byte packet. We'll key the parser
+>    off `byteLength ≥ 80` same-day and keep reading the `[ACRO]` line as the ≤64-byte
+>    fallback (its `hang=`/`st=` stay authoritative either way). If appending is
+>    awkward, raising the `[ACRO]` event line itself to ~30 Hz while `plant=1` works
+>    too — the binary route is just cheaper on the BLE link than 30 Hz of text.
+> 2. **Cross-referencing builds:** the deployed page header now shows the web app's
+>    **git commit id** (stamped at deploy by the Pages workflow; local copies show
+>    `<parent-hash>+`). When filing anything across the boundary, quote the page id
+>    together with the `fw <tag>` build pill so both sides are pinned.
+> 3. **`[ACRO]` link naming vs the rig — please confirm which link carries the IMU.**
+>    Bench observation: rendering the shoulder link as the DERIVED angle (q2+sh, per
+>    the contract's "q2 = IMU/distal link" naming) drew **link 1 visibly wrong**; the
+>    UI now treats the wire's IMU angle as **link 1 directly** (shoulder link = the
+>    knob body) and derives **link 2 = IMU ± sh** (UI-side sign toggle), which matches
+>    the physical robot. Please confirm the estimator's own frame agrees — and, more
+>    important than the picture: if the controller's state order for `ak0..ak3` =
+>    K·[q1, q1̇, q2, q2̇] assumes IMU-on-link-2, then on this rig the gains act on
+>    swapped states — worth a check before the next upright attempt. If the wire
+>    naming changes (e.g. `q2=` → `qimu=`), we'll re-key the parser same-day.
+
 > ## Update 2026-06-30 (b) — LQR target-pose toggle (`actgt`)
 > Added a dedicated **Upright ⇄ Hang** toggle in the Acrobot card (under the LQR gains), not
 > the auto-slider: OFF = **hang** (`Cu actgt=180`, default — for safe gain bring-up), ON =

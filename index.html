@@ -1217,6 +1217,7 @@
       <span class="batt-ico"><span class="batt-bolt">⚡︎</span><span class="batt-fill" id="battFill"></span></span>
       <span id="battText">—</span>
     </span>
+    <span id="healthPill" class="pill" title="Aggregate pipeline health — link continuity, loop rates, glitch counters, IMU staleness ([HLT] + packet seq/t_ms). Green = all nominal; amber/red names the worst offender. Click for the full breakdown in Diagnostics.">sys —</span>
   </div>
   <!-- OTA flash progress — pinned to the very top (in the sticky header)
        so it's visible during a flash no matter where you've scrolled or
@@ -1369,11 +1370,16 @@
           <span id="acroStatePill" class="pill" title="Controller task state (st): off = disarmed, swing-up = pumping energy in, balancing = holding at the top">task: —</span>
           <span id="acroHangPill" class="pill bad" title="Hang cal (GH) — step 1 of 2. Run Calibrate hanging zero before the angles can be trusted">HANG NOT SET</span>
           <span id="acroAxisPill" class="pill bad" title="Swing-axis cal (GA) — step 2 of 2, needed by the estimator's complementary filter. Run Calibrate swing axis after the hang cal">AXIS NOT SET</span>
-          <span id="acroQ1" class="pill live" title="Shoulder-link angle, UI-derived as q1 = q2 + sh (shaft), measured from UPRIGHT — 0 upright, ±180 hanging (= q2 when elbow is straight)">q1 = —</span>
-          <span id="acroW1" class="pill live" title="Shoulder-link angular rate (°/s)">w1 = —</span>
-          <span id="acroQ2" class="pill live" title="IMU-link angle measured from UPRIGHT — 0 upright, ±180 hanging (cal/hang pose = 180°)">q2 = —</span>
-          <span id="acroW2" class="pill live" title="IMU-link angular rate (°/s)">w2 = —</span>
+          <span id="acroQ1" class="pill live" title="Shoulder-link (link 1) angle — the IMU's world-frame reading, straight off the wire. 0 upright, ±180 hanging (cal/hang pose = 180°)">q1 = —</span>
+          <span id="acroW1" class="pill live" title="Shoulder-link angular rate (°/s) — raw IMU rate">w1 = —</span>
+          <span id="acroQ2" class="pill live" title="Elbow-link (link 2) angle, UI-DERIVED = q1 ± sh (shaft; sign from the flip toggle). 0 upright, ±180 hanging">q2 = —</span>
+          <span id="acroW2" class="pill live" title="Elbow-link angular rate (°/s), derived = w1 ± wsh">w2 = —</span>
+          <span id="acroSh" class="pill" title="RAW elbow-encoder angle sh (°) straight off the wire — link 2 is DERIVED as q1 ± sh. Diagnostic: bend ONLY the elbow → sh and q2 move, q1 (IMU) stays put; if the elbow link bends the wrong way, flip the shaft sign below. Rigid swing (elbow straight) → sh stays ≈ constant.">sh = —</span>
         </div>
+        <label class="toggle" style="margin: 0 0 6px;" title="The wire carries only the primitives (the IMU's world-frame angle and the shaft encoder sh); the elbow link is derived. Whether q2 = q1 + sh or q1 − sh depends on the encoder's count direction on this rig — flip this until the elbow link bends the same way as the real robot. Display-only; persisted in this browser.">
+          <input type="checkbox" id="acroShFlip">
+          <span>flip shaft sign (q2 = q1 − sh)</span>
+        </label>
         <div class="row" style="margin-bottom: 4px;">
           <button id="btnAcroHang" class="primary needs-conn" title="Hang the robot straight down, then press — firmware window-averages the accel and stores the hang datum + latches the elbow-encoder zero (GH). Auto-saves.">Calibrate hanging zero</button>
           <span class="stat" style="font-size: 11px;">Hang straight down, then press.</span>
@@ -1473,6 +1479,20 @@
   <details class="card dev-only" id="secDiag">
     <summary>Diagnostics <span class="sub">live data &amp; console</span></summary>
     <div class="body">
+      <!-- Pipeline-health strip — fed by the [HLT] line (3 s) + the telemetry
+           packet's seq/t_ms trailer (64-byte fw). Cumulative counters show as
+           per-window deltas; lifetime totals live in the tooltips. -->
+      <div class="row" id="healthStrip" style="margin-bottom: 4px;">
+        <span id="hpLink" class="pill" title="Telemetry link: packet rate + worst inter-arrival gap (measured client-side) + seq drops. Green ≈60 Hz w/ no drops; amber on gaps &gt;200 ms or drops; red on stall &gt;1 s. A stretched t_ms delta with NO seq gap is a link stall (fresh-frame skip), not a drop.">link —</span>
+        <span id="hpLat" class="pill" title="Render latency: firmware t_ms → arrival delta over a rolling ~10 s window (median / p95, offset-normalized). Sustained median &gt;100 ms after the conn-param fix means the link is queueing again — report it.">lat —</span>
+        <span id="hpLoops" class="pill" title="Firmware loop rates from [HLT]: sense shz (green 990–1010) / FOC fhz (steady) / core-0 lhz (amber &lt;300).">loops —</span>
+        <span id="hpGlitch" class="pill" title="Glitch counters per 3 s window (Δ of cumulative rdf/dtc/rec/so2/so5/ctjmp): rdf = IMU read fails, dtc = estimator ticks &gt;20 ms, rec = I2C bus self-recoveries, so2/so5 = sense ticks late &gt;2/&gt;5 ms, ctjmp = ctrl-loop &gt;2 ms. Flags RISING counts; lifetime totals here in the tooltip once live.">glitch —</span>
+        <span id="hpAge" class="pill" title="IMU staleness: ms since the last good IMU read (age). Green ≤2, amber &gt;5, red &gt;50.">age —</span>
+        <span id="hpDrop" class="pill" title="Wire-vs-received audit per window: Δatx (packets firmware sent) vs packets this page received. Deficit = radio drops. adf = fresh-frame deferral episodes (congestion gate working — NOT drops).">tx —</span>
+        <span id="hpBoot" class="pill" title="Last reset reason (rst). PWR/SW = normal. Anything else (PANIC, IWDT, TWDT, BROWN…) means the previous boot CRASHED.">rst —</span>
+      </div>
+      <div class="stat" style="margin: 0 0 2px;">packet inter-arrival (ms) — rolling</div>
+      <canvas id="latSpark" height="36" style="width: 100%; margin-bottom: 8px;"></canvas>
       <div class="row" style="margin-bottom: 8px;">
         <span id="liveTorque" class="pill live">τ = —</span>
         <span id="liveTilt" class="pill live">tilt = —</span>
@@ -1492,7 +1512,13 @@
       <pre id="console" style="margin-top: 8px;"></pre>
       <div class="row" style="margin-top: 8px;">
         <button id="btnWinding" class="needs-conn">Winding test</button>
+        <button id="btnSysCheck" disabled title="One-shot measured PASS/FAIL self-test burst — spot reserved, awaiting the firmware command (planned next FW cycle).">System check</button>
         <button id="btnDumpNvs" class="needs-conn" title="Print the full persisted NVS to the console (for baking defaults into firmware)">Dump NVS</button>
+      </div>
+      <div class="slider-row" style="margin-top: 8px;">
+        <label for="twinTau" title="Digital-twin display smoothing time-constant. The twin chases the newest packet with a frame-rate-independent exponential (alpha = 1 − e^(−dt/τ)) — 0 = no smoothing (raw sample-and-hold), ~30–60 ms reads glass-smooth with ~1–2 frames of visual lag. Display-only.">Twin smoothing τ</label>
+        <span class="value" id="twinTauVal">40 ms</span>
+        <input type="range" id="twinTau" min="0" max="120" step="5" value="40">
       </div>
     </div>
   </details>
@@ -1580,7 +1606,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "65126d7+", date: "2026-07-17" };
+const APP_BUILD = { id: "c135455+", date: "2026-07-17" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2366,7 +2392,12 @@ class BleTransport {
         if (dv.byteLength >= 52) {
           onBatterySoc(dv.getFloat32(48, true));
         }
-        if (!balanceRaf) balanceRaf = requestAnimationFrame(drawBalance);
+        // 64-byte packet: u32 seq @56 (one per notify — drop detection) +
+        // u32 t_ms @60 (fw millis at send — pacing/latency split). Older
+        // 56-byte firmware → nulls; arrival time is still measured.
+        onPktMeta(dv.byteLength >= 64 ? dv.getUint32(56, true) : null,
+                  dv.byteLength >= 64 ? dv.getUint32(60, true) : null);
+        startTwinAnim();   // 60 fps loop eases the twin toward this sample
       });
     } catch (e) { this.angle = null; }
     try {
@@ -2377,6 +2408,10 @@ class BleTransport {
         // [HB] — 2 Hz idle keepalive. Pure no-op: reset the link-alive watchdog
         // and don't echo to the console (it would spam during quiet periods).
         if (text && text.startsWith("[HB]")) { petTelemetry(); return; }
+        // [HLT] — 3 s pipeline-health line (name=value pairs, parsed
+        // generically so appended tokens are tolerated). Feeds the health
+        // strip; suppressed from the console except regressions.
+        if (text && text.startsWith("[HLT]")) { onHlt(text); return; }
         // Lift-detector coherence rides along on [SYS] (~3 s) and [ATT] (blocked
         // entry) lines — pull it into the confidence chip wherever it appears.
         const cohM = text && text.match(/\bcoh=([\d.]+)/);
@@ -2413,15 +2448,20 @@ class BleTransport {
           setAcroAxis(true);
         }
         // [ACRO] hang=<0|1> st=<off|swing|bal> q2=<deg> w2=<deg/s> sh=<deg> wsh=<deg/s>
-        // — ~4 Hz acrobot readout (plant=1). Firmware sends RAW primitives now
-        // (2nd-link q2 from upright + shaft sh, zeroed at hang); the UI DERIVES
-        // the 1st-link angle q1 = q2 + sh (and w1 = w2 + wsh), both from-upright.
+        // — ~4 Hz acrobot readout (plant=1). Wire primitives: the IMU angle
+        // (world frame — wire-named "q2") and the shaft encoder sh. The IMU
+        // rides on LINK 1 (the shoulder link carries the knob body), so link 1
+        // IS the IMU angle directly and link 2 is DERIVED = IMU ± sh (sign
+        // from the acro-card flip toggle). The UI previously assumed
+        // IMU-on-link-2 per the contract naming and derived link 1 — which
+        // drew link 1 wrong; FW pinged in forFWfromUI.md to confirm/rename.
         // \b on the key so num("sh") can't match inside "wsh=". Echo suppressed.
         if (text && /^\[ACRO\]/i.test(text)) {
           const num = k => { const m = text.match(new RegExp("\\b" + k + "=(-?[\\d.]+)")); return m ? parseFloat(m[1]) : 0; };
           const stM = text.match(/\bst=(\w+)/);
-          const q2 = num("q2"), w2 = num("w2"), sh = num("sh"), wsh = num("wsh");
-          onAcro(num("hang"), q2 + sh, w2 + wsh, q2, w2, stM ? stM[1] : null);
+          const qImu = num("q2"), wImu = num("w2"), sh = num("sh"), wsh = num("wsh");
+          const ss = acroShFlip ? -1 : 1;   // link-2 derivation sign (acro-card toggle)
+          onAcro(num("hang"), qImu, wImu, qImu + ss * sh, wImu + ss * wsh, stM ? stM[1] : null, sh, wsh);
           return;
         }
         // [SWP] … probe-sweep lines (begin / data row / captured / paired / saved).
@@ -2794,10 +2834,14 @@ function setStatus(ok, name) {
     onBatterySoc(-1);     // → unknown/USB glyph, no stale charge level
     setCoh(null);         // → "coh —", neutral (no stale confidence reading)
     setContact(null);     // → "wa —", neutral (no stale ground-contact reading)
+    resetHealth();        // blank the health strip + header pill, drop seq/t_ms baselines
     hideSweepStale();     // clear any probe-cal-stale nudge from a prior link
     // Neutralize the balance visual so it doesn't hold the last pose.
     if (typeof balanceLive !== "undefined") {
       balanceLive.tilt = 0; balanceLive.posErrSat = 0; balanceLive.mode = 0; balanceLive.shaftAngle = 0;
+      // Snap the eased twin state too — the 60 fps loop stops on disconnect,
+      // so this one-shot redraw must not show a stale eased pose.
+      twinDisp.tilt = 0; twinDisp.posErrSat = 0; twinDisp.shaft = 0;
       if (typeof drawBalance === "function" && !balanceRaf) balanceRaf = requestAnimationFrame(drawBalance);
     }
     if (flashBtn) { flashBtn.disabled = true; flashBtn.title = "Connect to the knob first"; }
@@ -2806,7 +2850,7 @@ function setStatus(ok, name) {
 }
 
 // ─── Telemetry watchdog ─────────────────────────────────────────────────────
-// A live link must keep streaming telemetry (~30 Hz). If a full second passes
+// A live link must keep streaming telemetry (~60 Hz). If a full second passes
 // with no packet while the transport still claims to be connected, the GATT
 // session is stale (stream dead but no disconnect event) — so we tear it down
 // and immediately kick off the reconnect loop rather than sit Disconnected.
@@ -2845,6 +2889,269 @@ function petTelemetry() {
   }
   armTelemetryWatchdog();
 }
+
+// ─── Pipeline health — [HLT] line + packet seq/t_ms trailer ────────────────
+// Feeds the Diagnostics health strip and the header aggregate pill. Two
+// sources: (1) the 64-byte telemetry packet's u32 seq/t_ms trailer, measured
+// against client arrival times — link continuity, drops, stalls, latency;
+// (2) the 3 s [HLT] event line — loop rates, glitch counters, staleness,
+// tx audit, reset reason. Cumulative counters display as per-window deltas
+// (lifetime totals in tooltips); a backwards counter/seq = fw reboot or new
+// session and silently re-baselines instead of spiking.
+const linkStat = {
+  lastSeq: null, drops: 0,          // session seq-gap total
+  lastTms: null,
+  lastArr: 0, arrTimes: [],         // arrival stamps, ~2 s (rate)
+  gaps: [],                         // {t, gap} inter-arrival, ~rolling (spark + max)
+  offs: [],                         // {t, off} arrival−t_ms, ~10 s (latency)
+  dropLog: [], stallLog: [],        // {t, n} recent events, ~5 s (pill coloring)
+  rxWin: 0,                         // packets received since last [HLT] (Δatx audit)
+};
+const hltStat = { prev: {}, life: {}, fhzHist: [] };
+const healthParts = {};
+
+function onPktMeta(seq, tms) {
+  const now = performance.now();
+  const L = linkStat;
+  if (L.lastArr) {
+    L.gaps.push({ t: now, gap: now - L.lastArr });
+    while (L.gaps.length > 400) L.gaps.shift();
+  }
+  L.lastArr = now;
+  L.rxWin++;
+  L.arrTimes.push(now);
+  while (L.arrTimes.length && L.arrTimes[0] < now - 2000) L.arrTimes.shift();
+  if (seq !== null) {
+    if (L.lastSeq !== null && seq < L.lastSeq) {
+      // seq went backwards → firmware rebooted / new session. Re-baseline
+      // (NOT 4-billion drops).
+      L.drops = 0; L.dropLog.length = 0; L.stallLog.length = 0; L.lastTms = null;
+    } else if (L.lastSeq !== null) {
+      const missed = seq - L.lastSeq - 1;
+      if (missed > 0) {
+        // Real radio drops — packets sent but never delivered.
+        L.drops += missed;
+        L.dropLog.push({ t: now, n: missed });
+      } else if (tms !== null && L.lastTms !== null
+                 && ((tms - L.lastTms) >>> 0) > 50) {
+        // Contiguous seq but stretched t_ms → nothing was lost: either the
+        // congestion gate skipped to a fresher frame (adf) or fw pacing
+        // stalled. A stall episode, NOT a drop.
+        L.stallLog.push({ t: now, n: 1 });
+      }
+    }
+    L.lastSeq = seq;
+  }
+  if (tms !== null) {
+    // Clock-domain bridge: latency ≈ (arrival − t_ms) − min(arrival − t_ms)
+    // over the window; the rolling min is the transport's floor.
+    L.offs.push({ t: now, off: now - tms });
+    while (L.offs.length && L.offs[0].t < now - 10000) L.offs.shift();
+    L.lastTms = tms;
+  }
+}
+
+// Per-pill update + header aggregate. lvl: 0 ok · 1 warn · 2 bad · null neutral.
+function setHealthPart(key, lvl, text, offender) {
+  const ids = { link: "hpLink", lat: "hpLat", loops: "hpLoops",
+                glitch: "hpGlitch", age: "hpAge", tx: "hpDrop", boot: "hpBoot" };
+  const el = document.getElementById(ids[key]);
+  if (el) {
+    el.textContent = text;
+    el.className = "pill" + (lvl === 2 ? " bad" : lvl === 1 ? " warn" : lvl === 0 ? " ok" : "");
+  }
+  healthParts[key] = { lvl, offender };
+  const hp = document.getElementById("healthPill");
+  if (!hp) return;
+  let worst = null;
+  for (const p of Object.values(healthParts)) {
+    if (p.lvl === null) continue;
+    if (worst === null || p.lvl > worst.lvl) worst = p;
+  }
+  if (worst === null)      { hp.textContent = "sys —";  hp.className = "pill"; }
+  else if (worst.lvl === 0){ hp.textContent = "sys ✓";  hp.className = "pill ok"; }
+  else { hp.textContent = `sys: ${worst.offender}`;
+         hp.className = "pill " + (worst.lvl === 2 ? "bad" : "warn"); }
+}
+
+function onHlt(text) {
+  const vals = {};
+  const re = /\b([A-Za-z_]\w*)=(-?[\w.]+)/g;   // generic name=value — appended tokens tolerated
+  let m; while ((m = re.exec(text))) vals[m[1]] = m[2];
+  const num = k => { const v = parseFloat(vals[k]); return Number.isNaN(v) ? null : v; };
+  const H = hltStat;
+  // Glitch counters (cumulative): meaning strings double as console text.
+  const CUM = { rdf: "IMU read failures", dtc: "estimator ticks >20 ms",
+                rec: "IMU bus recoveries", so2: "sense ticks late >2 ms",
+                so5: "sense ticks late >5 ms" };
+  const cumKeys = [...Object.keys(CUM), "atx", "adf"];
+  if (cumKeys.some(k => num(k) !== null && H.prev[k] !== undefined && num(k) < H.prev[k])) {
+    H.prev = {}; H.life = {};       // counters reset (fw reboot) — re-baseline silently
+  }
+  const delta = {};
+  for (const k of cumKeys) {
+    const v = num(k); if (v === null) continue;
+    delta[k] = H.prev[k] !== undefined ? v - H.prev[k] : 0;
+    H.prev[k] = v; H.life[k] = v;
+  }
+  // Glitches — per-window deltas, flag rising; ctjmp is already per-window.
+  const ctjmp = num("ctjmp") || 0;
+  let worstK = null, worstN = 0;
+  for (const k of Object.keys(CUM)) {
+    const d = delta[k] || 0;
+    if (d > worstN) { worstN = d; worstK = k; }
+    if (d > 0) log(`[HLT] regression: ${k}+${d} — ${CUM[k]} (lifetime ${H.life[k]})`, "warn");
+  }
+  if (ctjmp > worstN) { worstN = ctjmp; worstK = "ctjmp"; }
+  const gEl = document.getElementById("hpGlitch");
+  if (gEl) gEl.title = "Glitch counters, Δ per 3 s window — lifetime totals: "
+    + Object.keys(CUM).map(k => `${k}=${H.life[k] ?? "—"}`).join(" ")
+    + ` · ctjmp(win)=${ctjmp} · smax=${vals.smax ?? "—"}µs ctmax=${vals.ctmax ?? "—"}µs fmax=${vals.fmax ?? "—"}µs`;
+  setHealthPart("glitch", worstN > 0 ? 1 : 0,
+                worstN > 0 ? `glitch ${worstK}+${worstN}` : "glitch ✓",
+                `${worstK}+${worstN}`);
+  // Loop rates — shz green 990–1010, lhz amber <300, fhz steady vs its median.
+  const shz = num("shz"), fhz = num("fhz"), lhz = num("lhz");
+  if (shz !== null) {
+    if (fhz !== null) {
+      H.fhzHist.push(fhz); if (H.fhzHist.length > 20) H.fhzHist.shift();
+    }
+    const fMed = H.fhzHist.length
+      ? [...H.fhzHist].sort((a, b) => a - b)[H.fhzHist.length >> 1] : fhz;
+    const shzBad = shz < 900, shzWarn = shz < 990 || shz > 1010;
+    const lhzWarn = lhz !== null && lhz < 300;
+    const fhzWarn = fhz !== null && fMed && Math.abs(fhz - fMed) > 0.15 * fMed;
+    const lvl = shzBad ? 2 : (shzWarn || lhzWarn || fhzWarn) ? 1 : 0;
+    const fk = v => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`;
+    setHealthPart("loops", lvl, `loops ${shz}/${fk(fhz ?? 0)}/${lhz ?? "—"}`,
+                  shzBad || shzWarn ? `shz ${shz}` : lhzWarn ? `lhz ${lhz}` : `fhz ${fhz}`);
+  }
+  // IMU staleness.
+  const age = num("age");
+  if (age !== null) {
+    setHealthPart("age", age > 50 ? 2 : age > 5 ? 1 : 0, `age ${age} ms`, `age ${age}ms`);
+  }
+  // Δatx (sent) vs received this window; adf = deferral episodes (not drops).
+  const dAtx = delta.atx, adfD = delta.adf || 0;
+  if (dAtx !== undefined && hltStat._hadWin) {
+    const rx = linkStat.rxWin;
+    const deficit = dAtx - rx;
+    setHealthPart("tx", deficit > 5 ? 2 : deficit > 1 ? 1 : 0,
+                  `tx ${rx}/${dAtx}` + (adfD ? ` adf+${adfD}` : ""),
+                  `tx −${deficit}`);
+    if (adfD > 0) log(`[HLT] adf+${adfD} — link stall(s), freshest-frame skip (deferred, not dropped)`);
+  }
+  hltStat._hadWin = true;
+  linkStat.rxWin = 0;
+  // Reset reason — anything but PWR/SW means the last reboot was a crash.
+  if (vals.rst !== undefined) {
+    const ok = /^(PWR|SW)$/i.test(vals.rst);
+    setHealthPart("boot", ok ? 0 : 2, `rst ${vals.rst}`, `rst ${vals.rst}`);
+    if (!ok && !H._rstLogged) {
+      log(`[HLT] rst=${vals.rst} — last reboot was a CRASH (not PWR/SW)`, "bad");
+      H._rstLogged = true;
+    }
+  }
+  // Free-heap (informational — surfaces via the link tooltip, see ticker).
+  if (vals.heap !== undefined) linkStat.heap = vals.heap;
+}
+
+// 1 Hz link ticker — packet rate, gaps, drops, latency, sparkline. Client-side
+// measurements work on 56-byte firmware too (no seq/t_ms → drop/lat pills stay
+// neutral).
+setInterval(() => {
+  if (!document.body.classList.contains("connected")) return;
+  const L = linkStat;
+  if (!L.lastArr) return;   // no binary packets this session (USB serial) — stay neutral
+  const now = performance.now();
+  const prune = (a, ms) => { while (a.length && a[0].t < now - ms) a.shift(); };
+  prune(L.dropLog, 5000); prune(L.stallLog, 5000);
+  while (L.arrTimes.length && L.arrTimes[0] < now - 2000) L.arrTimes.shift();
+  const rate = L.arrTimes.length / 2;
+  const recentGaps = L.gaps.filter(g => g.t > now - 3000);
+  const maxGap = recentGaps.reduce((mx, g) => Math.max(mx, g.gap), 0);
+  const drops5 = L.dropLog.reduce((s, e) => s + e.n, 0);
+  const stalls5 = L.stallLog.reduce((s, e) => s + e.n, 0);
+  const sinceLast = L.lastArr ? now - L.lastArr : Infinity;
+  let lvl, txt;
+  if (sinceLast > 1000) { lvl = 2; txt = "link STALL"; }
+  else {
+    lvl = (drops5 > 0 || maxGap > 200) ? 1 : 0;
+    txt = `link ${rate.toFixed(0)} Hz`
+        + (drops5 ? ` −${drops5}` : "") + (stalls5 ? ` ~${stalls5}` : "");
+  }
+  setHealthPart("link", lvl, txt, drops5 ? `${drops5} drops` : maxGap > 200 ? `gap ${maxGap | 0}ms` : "link STALL");
+  const lEl = document.getElementById("hpLink");
+  if (lEl) lEl.title =
+    `Telemetry link — rate ${rate.toFixed(1)} Hz · worst gap (3 s) ${maxGap | 0} ms · `
+    + `drops: ${drops5} last 5 s / ${L.drops} session · stalls (stretched t_ms, no seq gap — `
+    + `fresh-frame skip or fw pacing): ${stalls5} last 5 s. Green ≈60 Hz no drops; `
+    + `amber gap >200 ms or drops; red stall >1 s.`
+    + (L.heap !== undefined ? ` · free heap ${L.heap} B` : "");
+  // Latency: offset-normalized arrival − t_ms, median + p95 over ~10 s.
+  if (L.offs.length >= 10) {
+    const minOff = L.offs.reduce((mn, o) => Math.min(mn, o.off), Infinity);
+    const lats = L.offs.map(o => o.off - minOff).sort((a, b) => a - b);
+    const med = lats[lats.length >> 1] | 0;
+    const p95 = lats[Math.min(lats.length - 1, Math.floor(lats.length * 0.95))] | 0;
+    setHealthPart("lat", med > 100 ? 2 : (med > 30 || p95 > 100) ? 1 : 0,
+                  `lat ${med}/${p95} ms`, `lat ${med}ms`);
+  }
+  drawLatSpark(recentGaps.length ? L.gaps : []);
+}, 1000);
+
+// Inter-arrival sparkline — one bar per packet gap, capped at 100 ms so a
+// smooth 16 ms stream reads as a low, even band and stalls spike visibly.
+function drawLatSpark(gaps) {
+  const cv = document.getElementById("latSpark");
+  if (!cv || !cv.clientWidth) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth * dpr, h = 36 * dpr;
+  if (cv.width !== w) cv.width = w;
+  if (cv.height !== h) cv.height = h;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  const n = Math.min(gaps.length, 240);
+  if (!n) return;
+  const bw = w / 240;
+  for (let i = 0; i < n; i++) {
+    const g = gaps[gaps.length - n + i].gap;
+    const y = Math.min(1, g / 100) * (h - 2 * dpr);
+    ctx.fillStyle = g > 100 ? "#ff625a" : g > 25 ? "#f1c34c" : "rgba(84,208,127,0.55)";
+    ctx.fillRect(w - (n - i) * bw, h - y, Math.max(1, bw - dpr), y);
+  }
+}
+
+function resetHealth() {
+  Object.assign(linkStat, { lastSeq: null, drops: 0, lastTms: null, lastArr: 0, rxWin: 0, heap: undefined });
+  linkStat.arrTimes.length = 0; linkStat.gaps.length = 0; linkStat.offs.length = 0;
+  linkStat.dropLog.length = 0; linkStat.stallLog.length = 0;
+  hltStat.prev = {}; hltStat.life = {}; hltStat.fhzHist.length = 0;
+  hltStat._hadWin = false; hltStat._rstLogged = false;
+  const blank = { hpLink: "link —", hpLat: "lat —", hpLoops: "loops —",
+                  hpGlitch: "glitch —", hpAge: "age —", hpDrop: "tx —", hpBoot: "rst —" };
+  for (const [id, txt] of Object.entries(blank)) {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = txt; el.className = "pill"; }
+  }
+  for (const k of Object.keys(healthParts)) delete healthParts[k];
+  const hp = document.getElementById("healthPill");
+  if (hp) { hp.textContent = "sys —"; hp.className = "pill"; }
+  drawLatSpark([]);
+}
+
+// Header aggregate pill → jump to the full breakdown (Diagnostics lives
+// behind the DEV toggle; reveal without persisting dev view).
+(() => {
+  const hp = document.getElementById("healthPill");
+  if (!hp) return;
+  hp.style.cursor = "pointer";
+  hp.onclick = () => {
+    setDevMode(true, false);
+    const d = document.getElementById("secDiag");
+    if (d) { d.open = true; d.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  };
+})();
 
 // Open a fresh connection using the selected transport. Returns true on
 // success. Kept gesture-safe: callers must invoke this with no awaited
@@ -4177,6 +4484,55 @@ function drawProfile() {
 new ResizeObserver(drawProfile).observe(profileCanvas);
 drawProfile();
 
+// ─── 60 fps real-time telemetry animation ──────────────────────────────────
+// Telemetry packets arrive at ~60 Hz (BLE notify) but frames still land late
+// sometimes and displays run up to 144 Hz, so a sample-and-hold twin visibly
+// steps. A single rAF loop runs while the link is live and CHASES the newest
+// sample with a frame-rate-independent exponential (alpha = 1 − e^(−dt/τ),
+// τ = 40 ms, tunable via the Diagnostics "Twin smoothing τ" slider; 0 = raw).
+// Snap guard: a big jump (mode change, stand-up kick, reconnect) must cut,
+// not smear — past the threshold the display snaps to the sample.
+const twinDisp = { tilt: 0, posErrSat: 0, shaft: 0, ring: 0 };
+let twinTauMs = 40;
+const TWIN_SNAP_TILT = 0.5;   // rad — a 0.5 rad tilt step in one frame is a discontinuity
+const TWIN_SNAP_SHAFT = 3.0;  // rad — shaft/ring accumulate revs; >3 rad/frame ≈ reconnect
+const chase = (disp, target, a, snap) =>
+  Math.abs(target - disp) > snap ? target : disp + (target - disp) * a;
+let twinRaf = 0, twinLastT = 0;
+function twinAnimLoop(ts) {
+  twinRaf = 0;
+  const dt = twinLastT ? Math.min(100, ts - twinLastT) : 16.7;
+  twinLastT = ts;
+  const a = twinTauMs > 0 ? 1 - Math.exp(-dt / twinTauMs) : 1;
+  twinDisp.tilt      = chase(twinDisp.tilt,      balanceLive.tilt,       a, TWIN_SNAP_TILT);
+  twinDisp.posErrSat = chase(twinDisp.posErrSat, balanceLive.posErrSat,  a, TWIN_SNAP_TILT);
+  twinDisp.shaft     = chase(twinDisp.shaft,     balanceLive.shaftAngle, a, TWIN_SNAP_SHAFT);
+  if (ringLiveRad !== null) {
+    twinDisp.ring = chase(twinDisp.ring, ringLiveRad, a, TWIN_SNAP_SHAFT);
+    drawRing();
+  }
+  drawBalance();
+  // Self-sustaining while the link is up; stops on disconnect and re-arms
+  // on the next packet via startTwinAnim().
+  if (document.body.classList.contains("connected")) {
+    twinRaf = requestAnimationFrame(twinAnimLoop);
+  } else {
+    twinLastT = 0;
+  }
+}
+function startTwinAnim() {
+  if (!twinRaf) { twinLastT = 0; twinRaf = requestAnimationFrame(twinAnimLoop); }
+}
+// Diagnostics τ slider — display-only feel tuning (0 = raw sample-and-hold).
+(() => {
+  const sl = document.getElementById("twinTau"), val = document.getElementById("twinTauVal");
+  if (!sl) return;
+  sl.addEventListener("input", () => {
+    twinTauMs = parseInt(sl.value, 10) || 0;
+    if (val) val.textContent = twinTauMs ? `${twinTauMs} ms` : "off (raw)";
+  });
+})();
+
 // ─── Scroll practice ring ─────────────────────────────────────────────────
 // A standalone wheel target. Hover and scroll inside it and the dial
 // rotates one tick per scroll click — gives the user something to feel
@@ -4188,8 +4544,10 @@ let ringLiveRad = null;          // live shaft angle from BLE notify (rad)
 const RING_TICK_PX = 50;         // pixels of wheel delta per snap tick
 
 function onLiveAngle(angle) {
-  ringLiveRad = angle;
-  drawRing();
+  // First sample after a (re)connect snaps the eased dial — the shaft angle
+  // accumulates whole revs, so easing from 0 would spin the dial for ages.
+  if (ringLiveRad === null) twinDisp.ring = angle;
+  ringLiveRad = angle;   // eased + drawn by the 60 fps twin loop
 }
 
 function drawRing() {
@@ -4223,7 +4581,7 @@ function drawRing() {
   // When the knob is streaming live angle over BLE, mirror it directly.
   // Otherwise fall back to wheel-tick accumulation.
   const dialRot   = baseRot + (ringLiveRad !== null
-                               ? ringLiveRad
+                               ? twinDisp.ring          // eased by the 60 fps twin loop
                                : ringTicks * tickAngle);
   const majorEvery = divs >= 48 ? Math.max(1, Math.round(divs / 12)) : 6;
   for (let i = 0; i < divs; i++) {
@@ -4308,7 +4666,7 @@ function drawBalance() {
   // User-frame setpoint (mm) and tracking error (mm, sign-flipped from
   // chip shaft-rad frame to match physical direction).
   const setMm   = (typeof lqrState !== "undefined" && lqrState.x_ref) ? lqrState.x_ref : 0;
-  const errMm   = -balanceLive.posErrSat * WHEEL_RADIUS_MM;
+  const errMm   = -twinDisp.posErrSat * WHEEL_RADIUS_MM;   // eased @ display rate
   const cartMm  = setMm + errMm;
   const satMm   = POS_SAT_MM;
 
@@ -4373,7 +4731,7 @@ function drawBalance() {
   // encoder angle. This is where the bot actually IS; cartMm above is what the
   // controller *thinks* it is (delta-saturated tracker). The visible gap
   // between them is the anti-windup error the slow drift is closing.
-  const trueMm = -balanceLive.shaftAngle * WHEEL_RADIUS_MM;
+  const trueMm = -twinDisp.shaft * WHEEL_RADIUS_MM;        // eased @ display rate
   const gapMm  = trueMm - cartMm;
 
   // Red bar on the ground spanning the controller↔truth gap. Drawn
@@ -4411,7 +4769,7 @@ function drawBalance() {
   const wy = groundY - wheelR;
 
   // Pole tipped by tilt angle (clamped to ±90° for drawing sanity).
-  const tilt = Math.max(-Math.PI/2, Math.min(Math.PI/2, balanceLive.tilt));
+  const tilt = Math.max(-Math.PI/2, Math.min(Math.PI/2, twinDisp.tilt));
   const px = wx + Math.sin(tilt) * poleLen;
   const py = wy - Math.cos(tilt) * poleLen;
 
@@ -4429,9 +4787,9 @@ function drawBalance() {
   ctx.strokeStyle = (balanceLive.mode === 1) ? "#3fb950" : `rgba(90, 105, 105, ${dim})`;
   ctx.lineWidth = 2 * dpr;
   ctx.beginPath(); ctx.arc(wx, wy, wheelR, 0, 2 * Math.PI); ctx.stroke();
-  // Wheel spoke driven by the TRUE shaft angle. Sign-flipped to match
-  // the slider's physical-forward convention.
-  const spokeA = -balanceLive.shaftAngle;
+  // Wheel spoke driven by the TRUE shaft angle (eased). Sign-flipped to
+  // match the slider's physical-forward convention.
+  const spokeA = -twinDisp.shaft;
   ctx.beginPath();
   ctx.moveTo(wx, wy);
   ctx.lineTo(wx + Math.cos(spokeA) * (wheelR - 2 * dpr),
@@ -4440,7 +4798,7 @@ function drawBalance() {
 
   // Readout.
   if (balanceInfo) {
-    const tDeg = (balanceLive.tilt * 180 / Math.PI).toFixed(1);
+    const tDeg = (twinDisp.tilt * 180 / Math.PI).toFixed(1);
     const satFlag = Math.abs(balanceLive.posErrSat) > POS_SAT_RAD - 1e-3 ? "  [SAT]" : "";
     balanceInfo.textContent =
       `cart = ${trueMm.toFixed(1)} mm   `
@@ -4673,23 +5031,16 @@ drawBias();
 // the estimator. See forUIfromFW_acrobot.md.
 const acroCanvas = document.getElementById("acroCanvas");
 let   acroRaf    = 0;
-const acroState  = { q1: 0, q2: 0, hang: 0, valid: false };
+// Latest raw [ACRO] sample (w1/w2 in °/s, t = arrival time) — kept whole for
+// diagnostics; the figure renders q1/q2 directly, uninterpolated.
+const acroState  = { q1: 0, q2: 0, w1: 0, w2: 0, t: 0, hang: 0, valid: false };
 
-// Smoothing: the [ACRO] stream is only ~4 Hz, so the stick figure is eased
-// toward the latest sample every animation frame (~60 fps) via a continuous
-// loop while acrobot mode is active — no more 4 Hz stepping.
-let acroDispQ1 = 0, acroDispQ2 = 0;   // displayed (eased) angles, deg
-let acroAnimRaf = 0;
-const acroAngDelta = (from, to) => ((to - from + 540) % 360) - 180;   // shortest signed path
-function acroAnimLoop() {
-  const ease = 0.25;
-  acroDispQ1 += acroAngDelta(acroDispQ1, acroState.q1) * ease;
-  acroDispQ2 += acroAngDelta(acroDispQ2, acroState.q2) * ease;
-  drawAcro();
-  acroAnimRaf = requestAnimationFrame(acroAnimLoop);
-}
-function startAcroAnim() { if (!acroAnimRaf) acroAnimRaf = requestAnimationFrame(acroAnimLoop); }
-function stopAcroAnim()  { if (acroAnimRaf) { cancelAnimationFrame(acroAnimRaf); acroAnimRaf = 0; } }
+// NO interpolation: the stick figure renders the raw [ACRO] samples exactly
+// as they arrive (~4 Hz) — no easing, no velocity dead-reckoning. What you
+// see is literally what the wire said, which is what you want when using the
+// figure to diagnose the estimator. (If the stream rate rises firmware-side,
+// the figure gets smoother for free.)
+let acroDispQ1 = 0, acroDispQ2 = 0;   // displayed angles, deg — raw latest sample
 
 // Rolling plots: filtered angles (q1/q2) and velocity estimates (w1/w2), fed
 // from the ~4 Hz [ACRO] stream. ~40 s window.
@@ -4727,7 +5078,6 @@ function setAcroActive(on) {
   if (pill) { pill.textContent = on ? "ACRO" : "plant —"; pill.className = on ? "pill ok" : "pill"; }
   setTwinPlant(on);
   if (on && !acroRaf) acroRaf = requestAnimationFrame(drawAcro);   // canvas just un-hid
-  if (on) startAcroAnim(); else stopAcroAnim();   // run the smoothing loop only while active
   // On the cart→acro transition, re-pull the registry (Z): the acro-only
   // tunables (gains, acpump, acsw, signs) aren't in the connect-time dump while
   // the firmware is in cart mode, so without this their sliders stay blank until
@@ -4739,14 +5089,18 @@ function setAcroActive(on) {
   _acroWasActive = on;
 }
 
-function onAcro(hang, q1, w1, q2, w2, st) {
-  acroState.hang = hang|0; acroState.q1 = q1; acroState.q2 = q2; acroState.valid = true;
+function onAcro(hang, q1, w1, q2, w2, st, sh, wsh) {
+  acroState.hang = hang|0; acroState.q1 = q1; acroState.q2 = q2;
+  acroState.w1 = w1; acroState.w2 = w2;
+  acroState.t = performance.now();   // sample arrival time (diagnostics)
+  acroState.valid = true;
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
   const d1  = v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}`;
   set("acroQ1",  `q1 = ${d1(q1)}°`);
   set("acroW1",  `w1 = ${d1(w1)}°/s`);
   set("acroQ2",  `q2 = ${d1(q2)}°`);
   set("acroW2",  `w2 = ${d1(w2)}°/s`);
+  if (sh !== undefined) set("acroSh", `sh = ${d1(sh)}°`);   // raw wire value, for link-2-derivation diagnosis
   const hp = document.getElementById("acroHangPill");
   if (hp) {
     if (hang) { hp.textContent = "hang set"; hp.className = "pill ok"; }
@@ -4759,8 +5113,29 @@ function onAcro(hang, q1, w1, q2, w2, st) {
   if (!hang) setAcroAxis(false);
   if (st) setAcroState(st);
   pushAcroPlot(q1, q2, w1, w2);   // feed the filtered-angle + velocity plots
-  startAcroAnim();                // ensure the smoothing loop is running
+  // Raw sample → straight to the figure (rAF-coalesced, no interpolation).
+  acroDispQ1 = q1; acroDispQ2 = q2;
+  if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
 }
+
+// Elbow-link derivation sign. The wire gives only the primitives — the IMU's
+// world-frame angle (link 1) and sh (shaft encoder, relative) — and link 2
+// = q1 ± sh: the sign depends on the encoder's count direction on this rig,
+// a hardware fact the UI can't derive. The toggle flips it live
+// (display-only) so the figure can be matched against the real robot;
+// persisted per-browser.
+let acroShFlip = false;
+try { acroShFlip = localStorage.getItem("shortor_acro_shflip") === "1"; } catch (e) {}
+(() => {
+  const cb = document.getElementById("acroShFlip");
+  if (!cb) return;
+  cb.checked = acroShFlip;
+  cb.addEventListener("change", () => {
+    acroShFlip = cb.checked;
+    try { localStorage.setItem("shortor_acro_shflip", acroShFlip ? "1" : "0"); } catch (e) {}
+    log(`q2 derivation → q1 ${acroShFlip ? "−" : "+"} sh (display only — controller unaffected).`, "ok");
+  });
+})();
 
 // Task-state indicator from the [ACRO] st= field.
 function setAcroState(st) {
@@ -4797,9 +5172,11 @@ function syncAcroArm(val) {
 
 function resetAcro() {
   acroState.valid = false; acroState.q1 = 0; acroState.q2 = 0; acroState.hang = 0;
+  acroState.w1 = 0; acroState.w2 = 0; acroState.t = 0;
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
   set("acroQ1",  "q1 = —"); set("acroW1", "w1 = —");
   set("acroQ2",  "q2 = —");  set("acroW2", "w2 = —");
+  set("acroSh",  "sh = —");
   const hp = document.getElementById("acroHangPill");
   if (hp) { hp.textContent = "HANG NOT SET"; hp.className = "pill bad"; }
   setAcroAxis(false);      // clear axis-cal status
@@ -4815,9 +5192,7 @@ function resetAcro() {
   setAcroArmPill(false);   // don't imply armed on a dead link; [TUN] re-syncs on reconnect
   _acroWasActive = false;  // so a reconnect into acro re-pulls the registry (Z)
   setTwinPlant(false);     // twin back to the cart view; [SYS] ACRO re-swaps on reconnect
-  // Stop the smoothing loop and blank the plots so a dropped link doesn't leave
-  // stale traces / a frozen pose on screen.
-  stopAcroAnim();
+  // Blank the plots + pose so a dropped link doesn't leave stale traces on screen.
   acroDispQ1 = 0; acroDispQ2 = 0;
   acroQ1Buf.fill(0); acroQ2Buf.fill(0); acroW1Buf.fill(0); acroW2Buf.fill(0); acroPlotIdx = 0;
   if (!acroAnglesRaf) acroAnglesRaf = requestAnimationFrame(drawAcroAngles);
