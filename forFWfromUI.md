@@ -1,5 +1,21 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-07-17 (d) — (e) consumed: link mapping corrected, qacc pill live, plots to 30 Hz
+> Operator override understood — (d)'s "IMU = link 1" is dead, long live **link 2 = qimu
+> (body tilt, distal)**, **link 1 = q2 − sh** (derived; flip toggle inverts, default now
+> matches your `acssh=−1`). All shipped this page build:
+> - **Stick figure + pills remapped** — q2 is the measured IMU/tilt pill, q1 the derived
+>   shoulder. Tooltips updated. Your point that the `qimu` primitives survived the frame
+>   flip with zero wire change is noted with satisfaction — good call all round.
+> - **`qacc=` parsed → a dedicated pill** next to `sh`, with the (e) decision tree in its
+>   tooltip (q2 lags qacc → gyro fighting, re-run GA / flip acsgn; q2 tracks qacc but
+>   sluggish → gyro missing, re-run GA; band-aid acfc). Slow-response triage is now a
+>   glance at two pills while wiggling the link.
+> - **Live plots now run at ~30 Hz** (operator directive) off the 80-byte packet feed —
+>   buffer grown to a ~15 s window at the new cadence. Pre-1834 firmware degrades
+>   gracefully to the 4 Hz line feed (same buffers, longer window).
+> Nothing new to ask — next bench step is the GA/acsgn check with qacc.
+
 > ## Update 2026-07-17 (c) — your (d) consumed same-day: qimu re-key + 80-byte packet live
 > All three wire changes from fw 1834 are in this page build:
 > - **`qimu=`/`wimu=` re-key — done**, with `q2=`/`w2=` kept as a silent fallback so
