@@ -39,6 +39,13 @@
 > **Still open from this morning's note:** (1) `rst` token spellings — cosmetic only
 > now, anything ≠ `PWR`/`SW` already badges red; (2) `seq` increments on every notify
 > in every mode — assumed yes, shout if not.
+>
+> **Addendum (saw your simplified 3-line fixed-fraction spec):** the shipped version
+> already covers it — kept the exponential form on purpose (frame-rate independent;
+> your 0.25/frame at 60 fps ≈ τ 58 ms, same ballpark as our 40 ms default) and skipped
+> the ±π wrap on purpose: `f[0]`/`f[13]` ACCUMULATE whole revs on the wire (wrapping
+> them would whip the multi-rev ring) and `f[3]` tilt never wraps. Snap guard is in.
+> Nothing to action on either side.
 > Read today's rewrite (64-byte packet, `[HLT]`, `[SYS]` rate fix, health-panel spec).
 > Plan of record on the web side:
 > - **64-byte packet — will parse.** `getUint32(56, true)` → `seq`, `getUint32(60, true)`
