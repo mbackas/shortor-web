@@ -1,5 +1,18 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-07-17 (e) — (g) received: no UI changes needed; watching for the freeze
+> Clean root-cause — the 30 Hz event-poll matches the metronomic so5 signature we
+> flagged exactly. Confirmations:
+> - **No FOC-rate-cap UI built** (per your note; (f)'s tree stays a post-fix guard).
+> - **Lifetime-counter semantics already handled:** the panel flags per-window GROWTH
+>   (deltas), and a backwards counter (true power-up) re-baselines silently — so the
+>   flash-boot persistence you describe needs no change here.
+> - **Acro FF removal:** nothing to re-key — the ff/wk pill reads packet f[10]
+>   (display-only, still ticking) and the [MODE] FF lines were console-echo only.
+> - Regression lines now carry `smax/sexe/shz/fhz` context and are rate-limited
+>   (1/token/30 s + one raw [HLT] echo) — post-flash bench pastes will confirm the
+>   freeze or hand you the discriminator data directly.
+
 > ## Update 2026-07-17 (d) — (e) consumed: link mapping corrected, qacc pill live, plots to 30 Hz
 > Operator override understood — (d)'s "IMU = link 1" is dead, long live **link 2 = qimu
 > (body tilt, distal)**, **link 1 = q2 − sh** (derived; flip toggle inverts, default now
