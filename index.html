@@ -1370,17 +1370,13 @@
           <span id="acroStatePill" class="pill" title="Controller task state (st): off = disarmed, swing-up = pumping energy in, balancing = holding at the top">task: —</span>
           <span id="acroHangPill" class="pill bad" title="Hang cal (GH) — step 1 of 2. Run Calibrate hanging zero before the angles can be trusted">HANG NOT SET</span>
           <span id="acroAxisPill" class="pill bad" title="Swing-axis cal (GA) — step 2 of 2, needed by the estimator's complementary filter. Run Calibrate swing axis after the hang cal">AXIS NOT SET</span>
-          <span id="acroQ1" class="pill live" title="Shoulder-link (link 1) angle, UI-DERIVED = q2 − sh (sign from the flip toggle). 0 upright, ±180 hanging">q1 = —</span>
-          <span id="acroW1" class="pill live" title="Shoulder-link angular rate (°/s), derived = w2 − wsh">w1 = —</span>
+          <span id="acroQ1" class="pill live" title="Shoulder-link (link 1) angle, UI-DERIVED = q2 + sh (the wire sh is already sign-corrected by the FW acssh tunable). 0 upright, ±180 hanging">q1 = —</span>
+          <span id="acroW1" class="pill live" title="Shoulder-link angular rate (°/s), derived = w2 + wsh">w1 = —</span>
           <span id="acroQ2" class="pill live" title="IMU-link (link 2) angle — the knob-body TILT straight off the wire (qimu; the body hangs at the distal end, operator-confirmed). 0 upright, ±180 hanging (cal/hang pose = 180°)">q2 = —</span>
           <span id="acroW2" class="pill live" title="IMU-link angular rate (°/s) — raw gyro-fused rate off the wire">w2 = —</span>
-          <span id="acroSh" class="pill" title="RAW elbow-encoder angle sh (°) straight off the wire — link 1 is DERIVED as q2 − sh. Diagnostic: bend ONLY the elbow → sh and q1 move, q2 (IMU) stays put; if the shoulder link bends the wrong way, flip the shaft sign below. Rigid swing (elbow straight) → sh stays ≈ constant.">sh = —</span>
+          <span id="acroSh" class="pill" title="Elbow-encoder angle sh (°) off the wire (already sign-corrected by FW acssh) — link 1 is DERIVED as q2 + sh. Diagnostic: bend ONLY the elbow → sh and q1 move, q2 (IMU) stays put; if the shoulder link bends mirrored vs the rig, flip the FW acssh tunable (Tuning panel) — it corrects the controller AND this display together. Rigid swing (elbow straight) → sh stays ≈ constant.">sh = —</span>
           <span id="acroQacc" class="pill" title="Accel-ONLY IMU angle (no gyro fusion) — the slow-response diagnostic, ~4 Hz off the [ACRO] line. q2 LAGGING qacc on fast moves = the complementary filter's gyro axis is fighting (re-run GA swing-axis cal, or flip acsgn). q2 TRACKING qacc but still sluggish = gyro contribution missing (axis ⊥ swing — re-run GA). Band-aid: raise acfc.">qacc = —</span>
         </div>
-        <label class="toggle" style="margin: 0 0 6px;" title="The wire carries only the primitives (the IMU/tilt angle q2 and the shaft encoder sh); the shoulder link is derived. Whether q1 = q2 − sh or q2 + sh depends on the encoder's count direction on this rig — flip this until the shoulder link bends the same way as the real robot. Display-only; persisted in this browser. Default (unflipped) = q2 − sh, matching firmware acssh=−1.">
-          <input type="checkbox" id="acroShFlip">
-          <span>flip shaft sign (q1 = q2 + sh)</span>
-        </label>
         <div class="row" style="margin-bottom: 4px;">
           <button id="btnAcroHang" class="primary needs-conn" title="Hang the robot straight down, then press — firmware window-averages the accel and stores the hang datum + latches the elbow-encoder zero (GH). Auto-saves.">Calibrate hanging zero</button>
           <span class="stat" style="font-size: 11px;">Hang straight down, then press.</span>
@@ -1607,7 +1603,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "83a5716+", date: "2026-07-17" };
+const APP_BUILD = { id: "f6205b1+", date: "2026-07-18" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -5130,14 +5126,16 @@ function setAcroActive(on) {
 // 80-byte packet at ~60 Hz. Takes the wire PRIMITIVES: qimu = the IMU's
 // world-frame angle = LINK 2 (the knob body hangs at the distal end and the
 // IMU reads its tilt — operator-confirmed, contract (e)) and sh = the elbow
-// encoder. Link 1 (shoulder) is DERIVED = qimu − sh (flip toggle inverts).
+// encoder. Link 1 (shoulder) is DERIVED = qimu + sh, unconditionally: the
+// wire sh is ALREADY acssh-sign-corrected firmware-side (contract (h) — a
+// mirrored elbow is fixed by flipping FW acssh, never a UI-side sign, so the
+// display and the controller always share one frame).
 // The figure renders each raw sample uninterpolated (operator decision);
 // pill text is throttled to ~10 Hz (readability + layout churn) and the
 // rolling plots run at ~30 Hz (operator-set cadence).
 let _acroPillMs = 0, _acroPlotMs = 0;
 function acroApplyMotion(qImu, wImu, sh, wsh) {
-  const ss = acroShFlip ? -1 : 1;   // link-1 derivation sign (acro-card toggle)
-  const q2 = qImu, w2 = wImu, q1 = qImu - ss * sh, w1 = wImu - ss * wsh;
+  const q2 = qImu, w2 = wImu, q1 = qImu + sh, w1 = wImu + wsh;
   acroState.q1 = q1; acroState.q2 = q2; acroState.w1 = w1; acroState.w2 = w2;
   acroState.t = performance.now();   // sample arrival time (diagnostics)
   acroState.valid = true;
@@ -5183,25 +5181,9 @@ function onAcro(hang, qImu, wImu, sh, wsh, st, qacc) {
   acroApplyMotion(qImu, wImu, sh, wsh);
 }
 
-// Shoulder-link derivation sign. The wire gives only the primitives — the
-// IMU's world-frame tilt (link 2, distal — operator-confirmed) and sh (shaft
-// encoder, relative) — and link 1 = q2 − sh by default (matching firmware
-// acssh=−1): the sign depends on the encoder's count direction on this rig,
-// a hardware fact the UI can't derive. The toggle flips it live
-// (display-only) so the figure can be matched against the real robot;
-// persisted per-browser.
-let acroShFlip = false;
-try { acroShFlip = localStorage.getItem("shortor_acro_shflip") === "1"; } catch (e) {}
-(() => {
-  const cb = document.getElementById("acroShFlip");
-  if (!cb) return;
-  cb.checked = acroShFlip;
-  cb.addEventListener("change", () => {
-    acroShFlip = cb.checked;
-    try { localStorage.setItem("shortor_acro_shflip", acroShFlip ? "1" : "0"); } catch (e) {}
-    log(`q1 derivation → q2 ${acroShFlip ? "+" : "−"} sh (display only — controller unaffected).`, "ok");
-  });
-})();
+// (The former UI-side shaft-sign flip toggle is gone per contract (h): the
+// wire sh is already acssh-corrected, so a UI sign could silently diverge
+// from the controller's frame. Sign problems are fixed with FW `acssh`.)
 
 // Task-state indicator from the [ACRO] st= field.
 function setAcroState(st) {

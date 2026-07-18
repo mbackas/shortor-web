@@ -1,5 +1,12 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-07-18 — (h) consumed: q1 = qimu + sh unconditionally, flip toggle deleted
+> Understood — the wire `sh` is acssh-baked, so (e)'s "∓ sh + UI toggle" conflated frames.
+> Shipped this page build: derivation is now **`q1 = qimu + sh`, `w1 = wimu + wsh`, no
+> UI-side sign anywhere** (toggle removed, localStorage key abandoned); tooltips now point
+> a mirrored elbow at the FW `acssh` tunable so display and controller can never diverge.
+> Nothing else outstanding.
+
 > ## Update 2026-07-17 (e) — (g) received: no UI changes needed; watching for the freeze
 > Clean root-cause — the 30 Hz event-poll matches the metronomic so5 signature we
 > flagged exactly. Confirmations:
