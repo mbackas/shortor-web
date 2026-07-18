@@ -1607,7 +1607,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "2a6d267+", date: "2026-07-17" };
+const APP_BUILD = { id: "34c5600+", date: "2026-07-17" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -3008,17 +3008,37 @@ function onHlt(text) {
   }
   // Glitches — per-window deltas, flag rising; ctjmp is already per-window.
   const ctjmp = num("ctjmp") || 0;
-  let worstK = null, worstN = 0;
+  let worstK = null, worstN = 0, anyReg = false;
+  // Timing context on every regression line — smax (worst inter-tick gap) vs
+  // sexe (worst step execution, fw (f)+) is the starvation discriminator.
+  const ctx = ` (smax=${vals.smax ?? "?"}µs sexe=${vals.sexe ?? "?"}µs shz=${vals.shz ?? "?"} fhz=${vals.fhz ?? "?"})`;
+  const hnow = performance.now();
+  H._regLogMs = H._regLogMs || {};
   for (const k of Object.keys(CUM)) {
     const d = delta[k] || 0;
     if (d > worstN) { worstN = d; worstK = k; }
-    if (d > 0) log(`[HLT] regression: ${k}+${d} — ${CUM[k]} (lifetime ${H.life[k]})`, "warn");
+    if (d > 0) {
+      anyReg = true;
+      // Rate-limit: a persistently-rising counter otherwise floods the console
+      // (2 lines / 3 s on the bench). First hit logs; repeats at most every
+      // 30 s — the glitch pill carries the ongoing state between lines.
+      if (!(k in H._regLogMs) || hnow - H._regLogMs[k] >= 30000) {
+        H._regLogMs[k] = hnow;
+        log(`[HLT] regression: ${k}+${d} — ${CUM[k]} (lifetime ${H.life[k]})${ctx}`, "warn");
+      }
+    }
+  }
+  // While regressing, echo one RAW [HLT] line per 30 s so a console paste
+  // carries the full window for cross-boundary diagnosis.
+  if (anyReg && (!H._rawLogMs || hnow - H._rawLogMs >= 30000)) {
+    H._rawLogMs = hnow;
+    log(`← ${text}`);
   }
   if (ctjmp > worstN) { worstN = ctjmp; worstK = "ctjmp"; }
   const gEl = document.getElementById("hpGlitch");
   if (gEl) gEl.title = "Glitch counters, Δ per 3 s window — lifetime totals: "
     + Object.keys(CUM).map(k => `${k}=${H.life[k] ?? "—"}`).join(" ")
-    + ` · ctjmp(win)=${ctjmp} · smax=${vals.smax ?? "—"}µs ctmax=${vals.ctmax ?? "—"}µs fmax=${vals.fmax ?? "—"}µs`;
+    + ` · ctjmp(win)=${ctjmp} · smax=${vals.smax ?? "—"}µs sexe=${vals.sexe ?? "—"}µs ctmax=${vals.ctmax ?? "—"}µs fmax=${vals.fmax ?? "—"}µs`;
   setHealthPart("glitch", worstN > 0 ? 1 : 0,
                 worstN > 0 ? `glitch ${worstK}+${worstN}` : "glitch ✓",
                 `${worstK}+${worstN}`);
@@ -3142,6 +3162,7 @@ function resetHealth() {
   linkStat.dropLog.length = 0; linkStat.stallLog.length = 0;
   hltStat.prev = {}; hltStat.life = {}; hltStat.fhzHist.length = 0;
   hltStat._hadWin = false; hltStat._rstLogged = false;
+  hltStat._regLogMs = {}; hltStat._rawLogMs = 0;
   const blank = { hpLink: "link —", hpLat: "lat —", hpLoops: "loops —",
                   hpGlitch: "glitch —", hpAge: "age —", hpDrop: "tx —", hpBoot: "rst —" };
   for (const [id, txt] of Object.entries(blank)) {
