@@ -1489,7 +1489,7 @@
         <span id="hpGlitch" class="pill" title="Glitch counters per 3 s window (Δ of cumulative rdf/dtc/rec/so2/so5/ctjmp): rdf = IMU read fails, dtc = estimator ticks &gt;20 ms, rec = I2C bus self-recoveries, so2/so5 = sense ticks late &gt;2/&gt;5 ms, ctjmp = ctrl-loop &gt;2 ms. Flags RISING counts; lifetime totals here in the tooltip once live.">glitch —</span>
         <span id="hpAge" class="pill" title="IMU staleness: ms since the last good IMU read (age). Green ≤2, amber &gt;5, red &gt;50.">age —</span>
         <span id="hpDrop" class="pill" title="Wire-vs-received audit per window: Δatx (packets firmware sent) vs packets this page received. Deficit = radio drops. adf = fresh-frame deferral episodes (congestion gate working — NOT drops).">tx —</span>
-        <span id="hpBoot" class="pill" title="Last reset reason (rst). PWR/SW = normal. Anything else (PANIC, IWDT, TWDT, BROWN…) means the previous boot CRASHED.">rst —</span>
+        <span id="hpBoot" class="pill" title="Last reset reason (rst). PWR/SW/SLEEP = normal; OTHER = unknown; PANIC/IWDT/TWDT/WDT/BROWN = the previous boot CRASHED.">rst —</span>
       </div>
       <div class="stat" style="margin: 0 0 2px;">packet inter-arrival (ms) — rolling</div>
       <canvas id="latSpark" height="36" style="width: 100%; margin-bottom: 8px;"></canvas>
@@ -1606,7 +1606,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "d384c5e+", date: "2026-07-17" };
+const APP_BUILD = { id: "003c60d+", date: "2026-07-17" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2397,6 +2397,15 @@ class BleTransport {
         // 56-byte firmware → nulls; arrival time is still measured.
         onPktMeta(dv.byteLength >= 64 ? dv.getUint32(56, true) : null,
                   dv.byteLength >= 64 ? dv.getUint32(60, true) : null);
+        // 80-byte packet (fw ≥1834, plant=1 only): acro state at the full
+        // ~60 Hz stream rate — f32 qimu(deg)@64, wimu(deg/s)@68, sh(deg)@72,
+        // wsh(deg/s)@76. Same values/units as the [ACRO] line, which remains
+        // authoritative for hang=/st= — this drives only the motion (figure,
+        // pills, plots), still rendered raw per the operator decision.
+        if (dv.byteLength >= 80) {
+          acroApplyMotion(dv.getFloat32(64, true), dv.getFloat32(68, true),
+                          dv.getFloat32(72, true), dv.getFloat32(76, true));
+        }
         startTwinAnim();   // 60 fps loop eases the twin toward this sample
       });
     } catch (e) { this.angle = null; }
@@ -2447,21 +2456,22 @@ class BleTransport {
         if (text && /^\[GRAV\]/i.test(text) && /swing\s+AXIS=/i.test(text)) {
           setAcroAxis(true);
         }
-        // [ACRO] hang=<0|1> st=<off|swing|bal> q2=<deg> w2=<deg/s> sh=<deg> wsh=<deg/s>
-        // — ~4 Hz acrobot readout (plant=1). Wire primitives: the IMU angle
-        // (world frame — wire-named "q2") and the shaft encoder sh. The IMU
-        // rides on LINK 1 (the shoulder link carries the knob body), so link 1
-        // IS the IMU angle directly and link 2 is DERIVED = IMU ± sh (sign
-        // from the acro-card flip toggle). The UI previously assumed
-        // IMU-on-link-2 per the contract naming and derived link 1 — which
-        // drew link 1 wrong; FW pinged in forFWfromUI.md to confirm/rename.
+        // [ACRO] hang=<0|1> st=<off|swing|bal> qimu=<deg> wimu=<deg/s> sh=<deg> wsh=<deg/s>
+        // — ~4 Hz acrobot readout (plant=1), AUTHORITATIVE for hang=/st= (the
+        // binary packet carries no flags). Wire primitives: qimu = the IMU's
+        // world-frame angle — link 1 on this rig (fw confirmed 2026-07-17 (d)
+        // and renamed the tokens from the ambiguous q2=/w2=; old spellings
+        // kept as a fallback for pre-1834 firmware) — and the shaft encoder
+        // sh. Link 2 is DERIVED = qimu ± sh (sign from the acro-card flip
+        // toggle). While fw ≥1834 streams the 80-byte packet, motion comes at
+        // ~60 Hz from there and this line mostly matters for the flags.
         // \b on the key so num("sh") can't match inside "wsh=". Echo suppressed.
         if (text && /^\[ACRO\]/i.test(text)) {
-          const num = k => { const m = text.match(new RegExp("\\b" + k + "=(-?[\\d.]+)")); return m ? parseFloat(m[1]) : 0; };
+          const num = k => { const m = text.match(new RegExp("\\b" + k + "=(-?[\\d.]+)")); return m ? parseFloat(m[1]) : null; };
           const stM = text.match(/\bst=(\w+)/);
-          const qImu = num("q2"), wImu = num("w2"), sh = num("sh"), wsh = num("wsh");
-          const ss = acroShFlip ? -1 : 1;   // link-2 derivation sign (acro-card toggle)
-          onAcro(num("hang"), qImu, wImu, qImu + ss * sh, wImu + ss * wsh, stM ? stM[1] : null, sh, wsh);
+          onAcro((num("hang") ?? 0) | 0,
+                 num("qimu") ?? num("q2") ?? 0, num("wimu") ?? num("w2") ?? 0,
+                 num("sh") ?? 0, num("wsh") ?? 0, stM ? stM[1] : null);
           return;
         }
         // [SWP] … probe-sweep lines (begin / data row / captured / paired / saved).
@@ -3043,12 +3053,14 @@ function onHlt(text) {
   }
   hltStat._hadWin = true;
   linkStat.rxWin = 0;
-  // Reset reason — anything but PWR/SW means the last reboot was a crash.
+  // Reset reason — fw-enumerated set (contract (d)): PWR/SW/SLEEP = normal,
+  // OTHER = unknown (amber), PANIC/IWDT/TWDT/WDT/BROWN = the last reboot CRASHED.
   if (vals.rst !== undefined) {
-    const ok = /^(PWR|SW)$/i.test(vals.rst);
-    setHealthPart("boot", ok ? 0 : 2, `rst ${vals.rst}`, `rst ${vals.rst}`);
-    if (!ok && !H._rstLogged) {
-      log(`[HLT] rst=${vals.rst} — last reboot was a CRASH (not PWR/SW)`, "bad");
+    const normal  = /^(PWR|SW|SLEEP)$/i.test(vals.rst);
+    const unknown = /^OTHER$/i.test(vals.rst);
+    setHealthPart("boot", normal ? 0 : unknown ? 1 : 2, `rst ${vals.rst}`, `rst ${vals.rst}`);
+    if (!normal && !unknown && !H._rstLogged) {
+      log(`[HLT] rst=${vals.rst} — last reboot was a CRASH (not PWR/SW/SLEEP)`, "bad");
       H._rstLogged = true;
     }
   }
@@ -5089,18 +5101,44 @@ function setAcroActive(on) {
   _acroWasActive = on;
 }
 
-function onAcro(hang, q1, w1, q2, w2, st, sh, wsh) {
-  acroState.hang = hang|0; acroState.q1 = q1; acroState.q2 = q2;
-  acroState.w1 = w1; acroState.w2 = w2;
+// Shared motion path — fed by BOTH the ~4 Hz [ACRO] line and (fw ≥1834) the
+// 80-byte packet at ~60 Hz. Takes the wire PRIMITIVES (qimu = IMU/link-1
+// world angle, sh = elbow encoder) and derives link 2 = qimu ± sh (flip
+// toggle). The figure renders each raw sample uninterpolated (operator
+// decision); pill text is throttled to ~10 Hz (readability + layout churn)
+// and the rolling plots keep their ~4 Hz cadence so the ~40 s window
+// doesn't shrink 15× when the 60 Hz packet feed is active.
+let _acroPillMs = 0, _acroPlotMs = 0;
+function acroApplyMotion(qImu, wImu, sh, wsh) {
+  const ss = acroShFlip ? -1 : 1;   // link-2 derivation sign (acro-card toggle)
+  const q1 = qImu, w1 = wImu, q2 = qImu + ss * sh, w2 = wImu + ss * wsh;
+  acroState.q1 = q1; acroState.q2 = q2; acroState.w1 = w1; acroState.w2 = w2;
   acroState.t = performance.now();   // sample arrival time (diagnostics)
   acroState.valid = true;
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
   const d1  = v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}`;
-  set("acroQ1",  `q1 = ${d1(q1)}°`);
-  set("acroW1",  `w1 = ${d1(w1)}°/s`);
-  set("acroQ2",  `q2 = ${d1(q2)}°`);
-  set("acroW2",  `w2 = ${d1(w2)}°/s`);
-  if (sh !== undefined) set("acroSh", `sh = ${d1(sh)}°`);   // raw wire value, for link-2-derivation diagnosis
+  if (acroState.t - _acroPillMs >= 100) {
+    _acroPillMs = acroState.t;
+    set("acroQ1",  `q1 = ${d1(q1)}°`);
+    set("acroW1",  `w1 = ${d1(w1)}°/s`);
+    set("acroQ2",  `q2 = ${d1(q2)}°`);
+    set("acroW2",  `w2 = ${d1(w2)}°/s`);
+    set("acroSh",  `sh = ${d1(sh)}°`);   // raw wire value, for link-2-derivation diagnosis
+  }
+  if (acroState.t - _acroPlotMs >= 250) {
+    _acroPlotMs = acroState.t;
+    pushAcroPlot(q1, q2, w1, w2);   // feed the filtered-angle + velocity plots
+  }
+  // Raw sample → straight to the figure (rAF-coalesced, no interpolation).
+  acroDispQ1 = q1; acroDispQ2 = q2;
+  if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
+}
+
+// [ACRO] line handler — motion via acroApplyMotion + the line-only flags:
+// hang= (cal state) and st= (task phase) are authoritative HERE, not in the
+// binary packet.
+function onAcro(hang, qImu, wImu, sh, wsh, st) {
+  acroState.hang = hang|0;
   const hp = document.getElementById("acroHangPill");
   if (hp) {
     if (hang) { hp.textContent = "hang set"; hp.className = "pill ok"; }
@@ -5112,10 +5150,7 @@ function onAcro(hang, q1, w1, q2, w2, st, sh, wsh) {
   if (sa) sa.disabled = !hang;
   if (!hang) setAcroAxis(false);
   if (st) setAcroState(st);
-  pushAcroPlot(q1, q2, w1, w2);   // feed the filtered-angle + velocity plots
-  // Raw sample → straight to the figure (rAF-coalesced, no interpolation).
-  acroDispQ1 = q1; acroDispQ2 = q2;
-  if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
+  acroApplyMotion(qImu, wImu, sh, wsh);
 }
 
 // Elbow-link derivation sign. The wire gives only the primitives — the IMU's

@@ -1,5 +1,24 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-07-17 (c) — your (d) consumed same-day: qimu re-key + 80-byte packet live
+> All three wire changes from fw 1834 are in this page build:
+> - **`qimu=`/`wimu=` re-key — done**, with `q2=`/`w2=` kept as a silent fallback so
+>   pre-1834 firmware still parses. `hang=`/`st=` stay authoritative on the line.
+> - **80-byte packet — parsed** (`byteLength ≥ 80` → f32 qimu/wimu/sh/wsh @64/68/72/76).
+>   The acro twin now moves at the full ~60 Hz stream rate, still rendered RAW
+>   per the operator decision — the 4 Hz ceiling is gone, exactly what we asked for.
+>   Thank you. Implementation notes: pill text is throttled to ~10 Hz and the rolling
+>   plots keep their ~4 Hz cadence (so the ~40 s window doesn't shrink 15×); the
+>   figure gets every sample.
+> - **Frame fix acknowledged — and thanks for checking the controller.** Glad the
+>   swapped-states flag was worth raising: LQR/pump/catch-basin all acting on the
+>   corrected q1=IMU frame matches what the figure shows. We'll re-verify `acsgn`/
+>   `acssh` signs and re-tune `ak*`/`acpump` at the hang target before any upright run.
+> - **`rst` set — badges updated to your enumeration**: `PWR`/`SW`/`SLEEP` green,
+>   `OTHER` amber, `PANIC`/`IWDT`/`TWDT`/`WDT`/`BROWN` red.
+> - **`seq` cadence confirmed** — matches what the link stats already assumed. Nothing
+>   outstanding on our side.
+
 > ## Update 2026-07-17 (b) — (b)+(c) received: health panel SHIPPED, twin now chases, verify plan armed
 > Read both your same-day follow-ups (conn-param/60 Hz fix + the freshest-frame gate).
 > Everything below is deployed in this page build:
