@@ -1,5 +1,40 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-07-22 — BUG: `[TUN]` dump truncates at 256 B (acxa/acxs & 20 more never dump) + first-run bench report
+> **Bench report first:** the gate chain + abort surfacing all work — first accepted
+> run ended `[SID] abort qimu — body swung above horizontal` in ~1.2 s at the auto
+> amplitude (0.8·Vlim). Your "unlikely but not impossible on a lightly damped rig"
+> case is our nominal case; we'll hunt the hottest surviving `acxa` manually. Which
+> led straight to the bug:
+>
+> **The `[TUN]` dump can't carry the registry anymore.** Operator went to set `acxa`
+> — not in the Tuning panel. Root cause in `main.cpp` (`Z` handler): the dump is one
+> `char tl[256]` line and the loop stops at `o < sizeof(tl) − 24`. The table is now
+> **35 entries ≈ 600 chars**; the dump stops around entry 14 (`sukf`). Everything
+> after — `suks sukg plant acsgn acssh acarm actgt accatch acpump acsw acpe acfc
+> ak0..ak3 acxa acxs ffg ffms ffwv` — has **never been in the dump**, so the
+> self-describing panel can't build rows for them and every acro control only ever
+> reconciles from single-set `[TUN] name=… set` echoes (this also finally explains
+> the "gain sliders blank until nudged" flakiness we papered over with re-pulls).
+>
+> **Ask — chunk the dump:** emit MULTIPLE `[TUN]` lines, each starting `[TUN] ` and
+> kept ≤ ~180 B (BLE-MTU-safe), e.g. 8–10 entries per line until the table is done.
+> The UI parser is already line-agnostic (it merges `name=value` pairs from any
+> number of `[TUN]` lines) — **zero UI change needed**, and it stays additive for
+> future params. Growing the buffer alone isn't enough: a single 600 B notify gets
+> MTU-split mid-token and the fragments are unparseable.
+>
+> **UI workaround shipped meanwhile (this page build):** `acxa`/`acxs` get bespoke
+> sliders in the Acrobot sysid block that send `Cu` blind (like ak0..3) and
+> reconcile from the set echo — amp labeled in volts with 0 = auto. So bench work
+> is unblocked; the chunked dump is still wanted so the registry is trustworthy.
+>
+> **Nice-to-have (from the bench report):** a soft amplitude GOVERNOR — scale the
+> pattern down as |qimu| approaches ~100° instead of hard-aborting at 90° — would
+> let the excitation ride the safe ceiling for the whole run (max identifiability,
+> no manual amp hunt). The hard abort stays as the backstop. Low priority once the
+> dump fix lands; manual `acxa` hunting works.
+
 > ## Update 2026-07-21 (b) — fw 2021 consumed: all three of your notes actioned
 > Same-day turnaround appreciated — both asks live and the blind-shipped keys matching
 > is the contract file working as intended. First bench press of the button hit your

@@ -1464,15 +1464,20 @@
             <span id="acroSysidPill" class="pill" title="Recorder state. Samples come from the ≥80-byte telemetry packet (fw t_ms @60 timebase; qimu/wimu/sh/wsh @64..76; applied elbow torque @80 once the firmware streams the 84-byte packet).">sysid: idle</span>
             <button id="btnAcroSysidDl" disabled title="Download the captured run as a gymbot-schema .csv (uniformly resampled; angles in rad from upright, unwrapped). Feed it to the SysID app in the gymbot repo (WSL): ~/venv_dp/bin/python sysid_app.py → http://127.0.0.1:8321">Download log (.csv)</button>
           </div>
+          <!-- acxa/acxs sliders — bespoke (send Cu blind like ak0..3): the fw
+               [TUN] dump truncates at 256 B before reaching them, so they can't
+               ride the self-describing panel until that's fixed fw-side. -->
+          <div id="acroSidParams" style="margin-top: 8px;"></div>
           <p class="help" style="margin: 6px 0 0;">
             The robot <b>actuates</b> during the pattern — keep clear. Firmware (≥2021)
             gates <code>AX</code> on: acrobot plant · hang cal (GH) · <b>DISARMED</b> ·
             no cal running · <b>settled hang</b> (links down &amp; still); a reject names
-            its gate in the pill. Amp/duration: <code>acxa</code>/<code>acxs</code> in
-            Tuning (amp is <b>volts</b>, 0 = auto 0.8·Vlim). Alternative on any firmware:
-            record a hand-excited free swing while DISARMED (τ = 0 exactly; fits up to an
-            overall mass/damping scale). Upload the .csv to the <b>gymbot</b> SysID app
-            (WSL, <code>http://127.0.0.1:8321</code>).
+            its gate in the pill. Amplitude is in <b>motor.target volts</b> (0 = auto
+            0.8·Vlim — too hot on a lightly damped rig: if the safety abort trips, drop
+            it and step back up; the best log is the hottest amp that survives).
+            Alternative on any firmware: record a hand-excited free swing while DISARMED
+            (τ = 0 exactly; fits up to an overall mass/damping scale). Upload the .csv to
+            the <b>gymbot</b> SysID app (WSL, <code>http://127.0.0.1:8321</code>).
           </p>
         </div>
       </div>
@@ -1630,7 +1635,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "14ba335+", date: "2026-07-21" };
+const APP_BUILD = { id: "e5b3d6a+", date: "2026-07-22" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -3994,10 +3999,9 @@ const TUN_META = {
   accatch:{ label: "acro swing→balance catch", unit: "rad", min: 0.1, max: 1.0,  step: 0.01 },
   acsgn:  { label: "acro angle sign",       unit: "",       min: -1,  max: 1,    step: 2    },
   acssh:  { label: "acro shaft sign",       unit: "",       min: -1,  max: 1,    step: 2    },
-  // sysID excitation (AX, fw ≥2021). acxa is motor.target VOLTS (voltage-mode
-  // drive, same u unit as the LQR output); 0 = auto 0.8·voltage_limit.
-  acxa:   { label: "sysid excite amp (0 = auto)", unit: "V", min: 0,  max: 8,    step: 0.1  },
-  acxs:   { label: "sysid excite duration", unit: "s",      min: 2,   max: 60,   step: 1    },
+  // (acxa/acxs — the AX sysID amp/duration — are TUN_HIDDEN bespoke sliders in
+  // the Acrobot sysid block: the fw [TUN] dump truncates at 256 B well before
+  // reaching them (bug filed 2026-07-22), so they must send blind like ak0..3.)
 };
 // Friendly labels for params that must stay free number inputs (unknown/hand-
 // tuned magnitudes — a wrong slider range would clamp them).
@@ -4005,7 +4009,7 @@ const TUN_LABELS = {};
 // Params with a bespoke control elsewhere — tracked in tunState but NOT given a
 // generic row. acarm → ARM toggle; acsw → Swing-up toggle; actgt → LQR target
 // toggle; ak0..ak3 → Balance LQR gains; acpump → pump gain. All in the Acrobot card.
-const TUN_HIDDEN = new Set(["acarm", "acsw", "actgt", "ak0", "ak1", "ak2", "ak3", "acpump"]);
+const TUN_HIDDEN = new Set(["acarm", "acsw", "actgt", "ak0", "ak1", "ak2", "ak3", "acpump", "acxa", "acxs"]);
 // [TUN] carries no type metadata, so booleans are a UI-side known set — rendered
 // as a toggle that sends 1/0 instead of a slider. (Per FW: only usbhap today.)
 const TUN_BOOL = new Set(["usbhap"]);
@@ -4023,6 +4027,7 @@ function setTunParam(name, val) {
     else if (name === "acsw") syncAcroSwing(val);
     else if (name === "actgt") syncAcroTarget(val);
     else if (/^ak[0-3]$/.test(name) || name === "acpump") syncAcroGain(name, val);
+    else if (name === "acxa" || name === "acxs") syncSidParam(name, val);
     return;
   }
   let rec = tunEls[name];
@@ -5716,6 +5721,48 @@ function sidBuildCsv() {
                 g(L(a.w1, b.w1)), g(L(a.w2, b.w2)), "0", g(tau2)].join(","));
   }
   return lines.join("\n") + "\n";
+}
+
+// acxa/acxs — excitation amplitude + duration. Bespoke slider rows that SEND
+// BLIND (`Cu acxa=…`) like ak0..3, because the fw [TUN] dump truncates at
+// 256 B long before reaching these names (bug filed forFWfromUI.md
+// 2026-07-22) — the self-describing panel never hears them. Reconciled from
+// the single-set `[TUN] name=… set` echo via setTunParam's TUN_HIDDEN hook.
+// Rows seed at the fw defaults (display only — nothing is sent until touched).
+const SID_PARAMS = {
+  acxa: { label: "excite amp",      min: 0, max: 8,  step: 0.1, def: 0,
+          fmt: v => v <= 0 ? "auto (0.8·Vlim)" : v.toFixed(1) + " V" },
+  acxs: { label: "excite duration", min: 2, max: 60, step: 1,   def: 20,
+          fmt: v => v.toFixed(0) + " s" },
+};
+const sidParamEls = {};
+(function buildSidParams() {
+  const wrap = document.getElementById("acroSidParams");
+  if (!wrap) return;
+  for (const name in SID_PARAMS) {
+    const m = SID_PARAMS[name];
+    const row = document.createElement("div"); row.className = "slider-row";
+    const lbl = document.createElement("label"); lbl.textContent = m.label;
+    const val = document.createElement("span"); val.className = "value";
+    val.textContent = m.fmt(m.def);
+    const sld = document.createElement("input");
+    sld.type = "range"; sld.className = "needs-conn";
+    sld.min = m.min; sld.max = m.max; sld.step = m.step; sld.value = m.def;
+    row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
+    wrap.appendChild(row);
+    sidParamEls[name] = { slider: sld, valEl: val, fmt: m.fmt };
+    sld.addEventListener("input", () => {
+      const v = parseFloat(sld.value);
+      val.textContent = m.fmt(v);
+      tunState[name] = v;
+      pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
+    });
+  }
+})();
+function syncSidParam(name, val) {   // from a [TUN] echo (there is no dump for these)
+  const rec = sidParamEls[name]; if (!rec) return;
+  if (document.activeElement !== rec.slider) rec.slider.value = val;
+  rec.valEl.textContent = rec.fmt(val);
 }
 
 const btnSidRun = document.getElementById("btnAcroSysid");
