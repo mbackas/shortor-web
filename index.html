@@ -539,6 +539,20 @@
   }
   .slider-row input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
   .slider-row input[type=range]:disabled + * { opacity: 0.5; }
+  /* Nudge steppers: the selected slider row glows (cyan inset bar) and the
+     −/+ buttons are sized as real touch targets (~44 px). */
+  .slider-row.nudge-active {
+    background: rgba(70, 214, 196, 0.06);
+    box-shadow: inset 2px 0 0 var(--cyan);
+  }
+  .nudge-btn {
+    min-width: 46px;
+    min-height: 34px;
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 4px 0;
+  }
   /* Acrobot gain value: editable number blended into the .value slot — drop the
      spin arrows so the right-aligned value isn't clipped. */
   .acro-gains input[type=number]::-webkit-inner-spin-button,
@@ -1401,6 +1415,16 @@
         <div class="acro-gains" style="margin-top: 12px;">
           <div class="stat" style="margin-bottom: 6px;">balance LQR gains &nbsp;·&nbsp; K = [q1, q1̇, q2, q2̇]</div>
           <div id="acroGains"></div>
+          <!-- One-tick steppers: tap any gain/pump/sysid slider to select it
+               (row highlights), then −/+ move it by exactly one slider tick —
+               far finer than a touch drag. Drags snap to 0 near center
+               (detent); the steppers bypass the detent so ±1 tick from zero
+               sticks. -->
+          <div class="row" style="margin-top: 6px; gap: 8px; align-items: center;">
+            <button id="btnNudgeMinus" class="needs-conn nudge-btn" title="Decrement the selected slider by one tick">−</button>
+            <button id="btnNudgePlus" class="needs-conn nudge-btn" title="Increment the selected slider by one tick">+</button>
+            <span id="acroNudgeLabel" class="stat">tap a slider to select</span>
+          </div>
           <!-- LQR target pose (actgt): which pose the balance controller regulates
                to. Hang (180°) is stable — tune gains + verify signs there safely;
                Upright (0°) is the real, unstable goal. Sends Cu actgt=0/180. -->
@@ -1635,7 +1659,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "e5b3d6a+", date: "2026-07-22" };
+const APP_BUILD = { id: "a879a1f+", date: "2026-07-22" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -5424,6 +5448,46 @@ if (btnAcroSwingAxis) btnAcroSwingAxis.onclick = async () => {
 // read-only cyan value + a full-width auto-fitting slider (range grows so a
 // rig-tuned magnitude never clamps). Each sends `Cu akN=…`; the [TUN] echo
 // reconciles, and reseedAcroGains() shows stored values on acrobot entry.
+// ─── One-tick nudge steppers (gain / pump / sysid sliders) ──────────────────
+// Touch drags are coarse; the −/+ buttons under the gains move the SELECTED
+// slider by exactly one tick. Tapping/focusing/dragging any registered slider
+// selects it (row highlights via .nudge-active). rec.commit(v) is each row's
+// format-and-send path — the steppers call it directly, BYPASSING the drag
+// detent, so stepping ±1 tick away from zero sticks.
+const acroNudgeRecs = {};   // name → { slider, valEl, row, label, commit }
+let acroNudgeSel = null;
+function acroNudgeRegister(name, rec) {
+  acroNudgeRecs[name] = rec;
+  const sel = () => acroNudgeSelect(name);
+  rec.slider.addEventListener("pointerdown", sel);
+  rec.slider.addEventListener("focus", sel);
+  rec.slider.addEventListener("input", sel);
+}
+function acroNudgeSelect(name) {
+  if (acroNudgeSel === name) return;
+  const prev = acroNudgeSel && acroNudgeRecs[acroNudgeSel];
+  if (prev) prev.row.classList.remove("nudge-active");
+  acroNudgeSel = name;
+  const rec = acroNudgeRecs[name];
+  rec.row.classList.add("nudge-active");
+  const el = document.getElementById("acroNudgeLabel");
+  if (el) el.textContent = `selected: ${rec.label} (${name})`;
+}
+function acroNudgeStep(dir) {
+  const rec = acroNudgeSel && acroNudgeRecs[acroNudgeSel];
+  if (!rec) return log("Tap a gain/pump/sysid slider first to select it.", "warn");
+  const s = rec.slider;
+  const step = parseFloat(s.step) || 1;
+  const v = Math.min(parseFloat(s.max), Math.max(parseFloat(s.min),
+            +((parseFloat(s.value) || 0) + dir * step).toFixed(6)));
+  s.value = v;
+  rec.commit(v);
+}
+const btnNudgeMinus = document.getElementById("btnNudgeMinus");
+if (btnNudgeMinus) btnNudgeMinus.onclick = () => acroNudgeStep(-1);
+const btnNudgePlus = document.getElementById("btnNudgePlus");
+if (btnNudgePlus) btnNudgePlus.onclick = () => acroNudgeStep(1);
+
 const ACRO_GAINS = [
   { name: "ak0", label: "q1"  }, { name: "ak1", label: "q1̇" },
   { name: "ak2", label: "q2"  }, { name: "ak3", label: "q2̇" },
@@ -5465,9 +5529,18 @@ function makeAcroGainRow(wrap, name, label, onChange) {
   sld.min = -ACRO_GAIN_FLOOR; sld.max = ACRO_GAIN_FLOOR; sld.step = ACRO_GAIN_FLOOR / 200; sld.value = 0;
   row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
   wrap.appendChild(row);
-  acroGainEls[name] = { slider: sld, valEl: val, bound: ACRO_GAIN_FLOOR };
-  sld.addEventListener("input", () => { const v = parseFloat(sld.value); val.textContent = fmtGain(v); onChange(v); });
-  return acroGainEls[name];
+  const rec = acroGainEls[name] = { slider: sld, valEl: val, bound: ACRO_GAIN_FLOOR, row, label,
+    commit(v) { val.textContent = fmtGain(v); onChange(v); } };
+  sld.addEventListener("input", () => {
+    let v = parseFloat(sld.value);
+    // Center detent: a DRAG landing within ±2% of the bound snaps to exactly
+    // 0, so zeroing a gain on touch is one flick. The ± steppers call
+    // rec.commit() directly (no snap) so single ticks off zero survive.
+    if (v !== 0 && Math.abs(v) < rec.bound / 50) { v = 0; sld.value = 0; }
+    rec.commit(v);
+  });
+  acroNudgeRegister(name, rec);
+  return rec;
 }
 
 // LQR gains (ak0..ak3) — each sends `Cu akN=…` directly.
@@ -5750,13 +5823,14 @@ const sidParamEls = {};
     sld.min = m.min; sld.max = m.max; sld.step = m.step; sld.value = m.def;
     row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
     wrap.appendChild(row);
-    sidParamEls[name] = { slider: sld, valEl: val, fmt: m.fmt };
-    sld.addEventListener("input", () => {
-      const v = parseFloat(sld.value);
-      val.textContent = m.fmt(v);
-      tunState[name] = v;
-      pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
-    });
+    const rec = sidParamEls[name] = { slider: sld, valEl: val, fmt: m.fmt, row, label: m.label,
+      commit(v) {
+        val.textContent = m.fmt(v);
+        tunState[name] = v;
+        pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
+      } };
+    sld.addEventListener("input", () => rec.commit(parseFloat(sld.value)));
+    acroNudgeRegister(name, rec);   // steppers work here too; no detent (0 = "auto" is the slider end)
   }
 })();
 function syncSidParam(name, val) {   // from a [TUN] echo (there is no dump for these)
