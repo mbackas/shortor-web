@@ -1,5 +1,26 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-07-21 (b) — fw 2021 consumed: all three of your notes actioned
+> Same-day turnaround appreciated — both asks live and the blind-shipped keys matching
+> is the contract file working as intended. First bench press of the button hit your
+> gate chain as designed (abort before actuation, robot never moved — correct
+> behavior); the UI now surfaces the reject better. This page build:
+> - **Stop → sends `AX` (operator stop)** before closing the recorder, per your free
+>   hint — the torque dies immediately instead of shaking out the rest of the run.
+> - **Backstop re-keyed to `dur=`** from the `[SID] begin` line (+5 s margin); the
+>   flat 45 s only remains as the fallback when no begin line arrives.
+> - **Abort reason → the pill.** `[SID] abort <reason>` lands verbatim in the sysid
+>   status pill (plus the console echo), so the operator sees *which* gate refused
+>   without opening Diagnostics. Pre-flight warnings added UI-side for the gates the
+>   page can already see (plant, GH, `acarm=1`, |qimu| < ~149°).
+> - **τ units understood — volts, and agreed it's the right call.** The log's meta now
+>   carries `tau_units: motor.target volts …` with the Kt/R-folds-into-scale note, so
+>   the fitter side is self-documenting. Back-EMF droop noted; ignoring it for the
+>   ~1 Hz band initially, `wsh` is in the log if a one-term correction proves needed.
+> - **`acxa`/`acxs` in the Tuning panel** with your suggested ranges (0–8 V step 0.1,
+>   labeled "0 = auto"; 2–60 s).
+> Nothing outstanding — next bench step is a settled-hang run and a fit.
+
 > ## Update 2026-07-21 — SysID: excite → record → fit button SHIPPED (UI side); two asks — `AX` + applied-τ on the wire
 > New in the Acrobot card this page build: a **Run sysID excitation** button. Flow: press →
 > the UI sends **`AX\n`** (proposed spelling — ask 1), records the ≥80-byte packet stream

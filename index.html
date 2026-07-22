@@ -1465,10 +1465,13 @@
             <button id="btnAcroSysidDl" disabled title="Download the captured run as a gymbot-schema .csv (uniformly resampled; angles in rad from upright, unwrapped). Feed it to the SysID app in the gymbot repo (WSL): ~/venv_dp/bin/python sysid_app.py → http://127.0.0.1:8321">Download log (.csv)</button>
           </div>
           <p class="help" style="margin: 6px 0 0;">
-            Needs the hang cal. The robot <b>actuates</b> during the pattern — keep clear.
-            On firmware without <code>AX</code>: stay DISARMED and excite by hand (flick the
-            arm) — a free-swing run with τ = 0 still fits the dynamics (up to an overall
-            mass/damping scale). Upload the .csv to the <b>gymbot</b> SysID app
+            The robot <b>actuates</b> during the pattern — keep clear. Firmware (≥2021)
+            gates <code>AX</code> on: acrobot plant · hang cal (GH) · <b>DISARMED</b> ·
+            no cal running · <b>settled hang</b> (links down &amp; still); a reject names
+            its gate in the pill. Amp/duration: <code>acxa</code>/<code>acxs</code> in
+            Tuning (amp is <b>volts</b>, 0 = auto 0.8·Vlim). Alternative on any firmware:
+            record a hand-excited free swing while DISARMED (τ = 0 exactly; fits up to an
+            overall mass/damping scale). Upload the .csv to the <b>gymbot</b> SysID app
             (WSL, <code>http://127.0.0.1:8321</code>).
           </p>
         </div>
@@ -1627,7 +1630,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "7b9dd4c+", date: "2026-07-21" };
+const APP_BUILD = { id: "14ba335+", date: "2026-07-21" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -3991,6 +3994,10 @@ const TUN_META = {
   accatch:{ label: "acro swing→balance catch", unit: "rad", min: 0.1, max: 1.0,  step: 0.01 },
   acsgn:  { label: "acro angle sign",       unit: "",       min: -1,  max: 1,    step: 2    },
   acssh:  { label: "acro shaft sign",       unit: "",       min: -1,  max: 1,    step: 2    },
+  // sysID excitation (AX, fw ≥2021). acxa is motor.target VOLTS (voltage-mode
+  // drive, same u unit as the LQR output); 0 = auto 0.8·voltage_limit.
+  acxa:   { label: "sysid excite amp (0 = auto)", unit: "V", min: 0,  max: 8,    step: 0.1  },
+  acxs:   { label: "sysid excite duration", unit: "s",      min: 2,   max: 60,   step: 1    },
 };
 // Friendly labels for params that must stay free number inputs (unknown/hand-
 // tuned magnitudes — a wrong slider range would clamp them).
@@ -5612,8 +5619,14 @@ async function sidStart() {
   sid.rec = true;
   const dl = document.getElementById("btnAcroSysidDl");
   if (dl) dl.disabled = true;   // stale run gone; re-enabled on a good finalize
+  // Pre-warn the fw gates (fw ≥2021 rejects AX with a [SID] abort naming the
+  // gate: plant=1 → GH → disarmed → no cal → settled hang). The warnings here
+  // catch the two the UI can see before the round-trip.
   if (!_acroWasActive)   log("⚠ Not in the acrobot plant — no acro packets to record. Switch the plant on first.", "warn");
-  if (!acroState.hang)   log("⚠ Hang cal not set — angles are uncalibrated; run GH first for a usable fit.", "warn");
+  if (!acroState.hang)   log("⚠ Hang cal not set — firmware rejects AX without GH (and angles would be uncalibrated).", "warn");
+  if (tunState.acarm == 1) log("⚠ Controller is ARMED — firmware rejects AX while armed (disarm → excite → re-arm).", "warn");
+  if (Math.abs(acroState.q2) < 149 && acroState.valid)
+    log("⚠ Links not at settled hang (|qimu| > ~149° and still) — firmware will abort not-settled.", "warn");
   try { await transport.writeCmd("AX\n"); }
   catch (e) { sid.rec = false; return log("SysID trigger failed: " + errMsg(e), "bad"); }
   log("SysID — sent AX; recording the acro packet stream (auto-stops on [SID] done, "
@@ -5642,13 +5655,27 @@ function sidStop(reason) {
       : " — too short for the fitter; not downloadable."), ok ? "ok" : "warn");
 }
 
-// [SID] lifecycle line → recorder control. Spellings per the proposed contract;
-// matched loosely so fw wording tweaks don't strand a recording.
+// [SID] lifecycle line → recorder control (contract live in fw ≥2021; matched
+// loosely so wording tweaks don't strand a recording). The abort REASON is
+// carried into the pill/log so the operator doesn't have to dig in the console
+// — fw names the exact gate (not-acrobot / needs GH / disarm / cal /
+// not-settled) or mid-run cause (operator / qimu safety / plant / cal).
 function onSidLine(text) {
   if (!sid.rec) return;
-  if (/\b(done|complete)\b/i.test(text))        sidStop("done (fw)");
-  else if (/\b(abort|reject|fail)/i.test(text)) sidStop("aborted (fw)");
-  else if (/\b(begin|start)/i.test(text))       sidPill("sysid: recording — fw pattern running", "pill warn");
+  const ab = text.match(/\babort\b\s*(.*)/i);
+  if (/\b(done|complete)\b/i.test(text))       sidStop("done (fw)");
+  else if (ab)                                  sidStop("abort: " + (ab[1].trim() || "(fw)"));
+  else if (/\b(reject|fail)/i.test(text))       sidStop("aborted (fw)");
+  else if (/\b(begin|start)/i.test(text)) {
+    // Re-key the backstop to the run's actual duration (+5 s margin) — fw
+    // suggestion; acxs is clamped 2–60 s so this always beats a flat 45.
+    const dm = text.match(/\bdur=([\d.]+)/);
+    if (dm) {
+      clearTimeout(sid.timer);
+      sid.timer = setTimeout(() => sidStop("time limit"), (parseFloat(dm[1]) + 5) * 1000);
+    }
+    sidPill("sysid: recording — fw pattern running", "pill warn");
+  }
 }
 
 // Build the gymbot logio-schema CSV from the captured rows, resampled onto an
@@ -5664,8 +5691,13 @@ function sidBuildCsv() {
     page: document.getElementById("appVer")?.textContent || "",
     n_raw: n, rate_hz: +(1 / dt).toFixed(3),
     tau_source: sid.tauSeen
-      ? "wire (applied elbow torque, pkt f32 @80)"
+      ? "wire (applied elbow drive, pkt f32 @80, post-clip ZOH)"
       : "zero — no torque telemetry; valid only for a disarmed free-swing run",
+    // fw ≥2021: tau2 is the SimpleFOC voltage-mode drive in motor.target VOLTS,
+    // not N·m — deliberately the same u unit the on-board LQR outputs, so gains
+    // fitted against it come back as ak0..ak3 with no conversion. The unknown
+    // Kt/R scale folds into the fitted mass/length parameters.
+    tau_units: "motor.target volts (voltage-mode drive; N*m differs by Kt/R, which folds into the fitted param scale)",
     act1: false, act2: true,
     convention: "theta absolute from upright (rad, unwrapped, +CCW); theta1 = shoulder = qimu+sh, theta2 = IMU link = qimu",
   };
@@ -5689,7 +5721,16 @@ function sidBuildCsv() {
 const btnSidRun = document.getElementById("btnAcroSysid");
 if (btnSidRun) btnSidRun.onclick = sidStart;
 const btnSidStop = document.getElementById("btnAcroSysidStop");
-if (btnSidStop) btnSidStop.onclick = () => sidStop("stopped");
+if (btnSidStop) btnSidStop.onclick = () => {
+  // AX while a run is active = operator stop (fw ≥2021) — kills the excitation
+  // torque immediately. Without this the recorder would close while the pattern
+  // keeps shaking the rig for the rest of its duration. Fire-and-forget: the
+  // [SID] abort operator echo lands after sid.rec is already false.
+  if (transport && transport.isConnected()) {
+    try { transport.writeCmd("AX\n"); } catch (e) { /* recorder still finalizes */ }
+  }
+  sidStop("stopped");
+};
 const btnSidDl = document.getElementById("btnAcroSysidDl");
 if (btnSidDl) btnSidDl.onclick = () => {
   const csv = sidBuildCsv();
