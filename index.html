@@ -1448,6 +1448,30 @@
             LQR gains (in <b>Tuning</b>) before arming.
           </p>
         </div>
+
+        <!-- SysID — excite → record → fit. Triggers the firmware's optimal
+             (persistently-exciting) elbow torque pattern (AX — proposed contract,
+             forFWfromUI.md 2026-07-21) and records the ≥80-byte packet stream into
+             a gymbot-schema test-run log (t,theta1,theta2,dtheta1,dtheta2,tau1,tau2
+             CSV) for the offline parameter fitter (gymbot repo, WSL). Works today
+             without FW support as a free-swing recorder: flick the arm while
+             DISARMED (τ ≡ 0 is then exact) and download. -->
+        <div class="acro-sysid" style="margin-top: 12px;">
+          <div class="stat" style="margin-bottom: 6px;">system identification &nbsp;·&nbsp; excite → record → fit (gymbot)</div>
+          <div class="row" style="gap: 10px; align-items: center;">
+            <button id="btnAcroSysid" class="primary needs-conn" title="Sends AX — firmware plays its identification torque pattern on the elbow from hang while this page records state + applied torque at the full packet rate. Keep hands clear.">Run sysID excitation</button>
+            <button id="btnAcroSysidStop" hidden title="Stop recording and finalize the log now.">Stop</button>
+            <span id="acroSysidPill" class="pill" title="Recorder state. Samples come from the ≥80-byte telemetry packet (fw t_ms @60 timebase; qimu/wimu/sh/wsh @64..76; applied elbow torque @80 once the firmware streams the 84-byte packet).">sysid: idle</span>
+            <button id="btnAcroSysidDl" disabled title="Download the captured run as a gymbot-schema .csv (uniformly resampled; angles in rad from upright, unwrapped). Feed it to the SysID app in the gymbot repo (WSL): ~/venv_dp/bin/python sysid_app.py → http://127.0.0.1:8321">Download log (.csv)</button>
+          </div>
+          <p class="help" style="margin: 6px 0 0;">
+            Needs the hang cal. The robot <b>actuates</b> during the pattern — keep clear.
+            On firmware without <code>AX</code>: stay DISARMED and excite by hand (flick the
+            arm) — a free-swing run with τ = 0 still fits the dynamics (up to an overall
+            mass/damping scale). Upload the .csv to the <b>gymbot</b> SysID app
+            (WSL, <code>http://127.0.0.1:8321</code>).
+          </p>
+        </div>
       </div>
     </div>
   </details>
@@ -1603,7 +1627,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "f6205b1+", date: "2026-07-18" };
+const APP_BUILD = { id: "7b9dd4c+", date: "2026-07-21" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -2402,6 +2426,10 @@ class BleTransport {
         if (dv.byteLength >= 80) {
           acroApplyMotion(dv.getFloat32(64, true), dv.getFloat32(68, true),
                           dv.getFloat32(72, true), dv.getFloat32(76, true));
+          // SysID recorder — captures this same sample on the fw t_ms timebase;
+          // reads the applied elbow torque @80 when the (proposed) 84-byte
+          // packet arrives. No-op unless a recording is running.
+          sidOnPacket(dv);
         }
         startTwinAnim();   // 60 fps loop eases the twin toward this sample
       });
@@ -2452,6 +2480,12 @@ class BleTransport {
         // (Rejection lines "GA needs GH" / "GA rejected…" fall through to echo.)
         if (text && /^\[GRAV\]/i.test(text) && /swing\s+AXIS=/i.test(text)) {
           setAcroAxis(true);
+        }
+        // [SID] — sysid-excitation lifecycle (proposed contract, forFWfromUI.md
+        // 2026-07-21): begin/done/abort. done/abort finalize the recorder; every
+        // line falls through to the normal console echo.
+        if (text && /^\[SID\]/i.test(text)) {
+          onSidLine(text);
         }
         // [ACRO] hang=<0|1> st=<off|swing|bal> qimu=<deg> wimu=<deg/s> sh=<deg> wsh=<deg/s>
         // — ~4 Hz acrobot readout (plant=1), AUTHORITATIVE for hang=/st= (the
@@ -5219,6 +5253,7 @@ function syncAcroArm(val) {
 }
 
 function resetAcro() {
+  if (sid.rec) sidStop("link lost");   // finalize (not discard) a mid-run capture
   acroState.valid = false; acroState.q1 = 0; acroState.q2 = 0; acroState.hang = 0;
   acroState.w1 = 0; acroState.w2 = 0; acroState.t = 0;
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
@@ -5497,6 +5532,177 @@ if (acroArmEl) acroArmEl.onchange = (e) => {
   setAcroArmPill(on);
   log(on ? "ARMED — acrobot controller running (swing-up → balance). Hold the rig."
          : "DISARMED — acrobot holds zero torque.", on ? "warn" : "ok");
+};
+
+// ─── SysID — excite → record → export (gymbot pipeline) ─────────────────────
+// One button triggers the firmware's optimal (persistently-exciting) elbow
+// torque pattern (`AX` — proposed contract, forFWfromUI.md 2026-07-21) and
+// records the ≥80-byte packet stream into a gymbot-schema test-run log:
+// columns t,theta1,theta2,dtheta1,dtheta2,tau1,tau2 — angles ABSOLUTE FROM
+// UPRIGHT in rad, UNWRAPPED; tau = torque actually applied (ZOH). On this rig
+// (contract (h)): theta1 = shoulder = qimu + sh, theta2 = IMU link = qimu;
+// tau1 ≡ 0 (passive shoulder), tau2 = f32 @80 once the fw streams the 84-byte
+// packet, else 0 (exact only for a DISARMED free-swing run — noted in meta).
+// The fitter requires a STRICTLY UNIFORM time column (rtol 1e-3) and fw t_ms
+// is ms-quantized (16/17 ms alternation at ~60 Hz), so the export resamples
+// onto an exactly uniform grid: linear interp for the states, previous-sample
+// hold for the (zero-order-hold) torque.
+const SID_MAX_MS   = 45000;  // auto-stop backstop (fw pattern proposed ~20 s)
+const SID_MIN_ROWS = 120;    // fitter rejects <100 samples; margin for resample
+const sid = { rec: false, rows: [], tauSeen: false, lastRaw: null, accMs: 0,
+              uwQ2: null, uwSh: null, timer: 0 };
+
+function sidPill(txt, cls) {
+  const el = document.getElementById("acroSysidPill");
+  if (el) { el.textContent = txt; el.className = cls || "pill"; }
+}
+function sidButtons(running) {
+  const run  = document.getElementById("btnAcroSysid");
+  const stop = document.getElementById("btnAcroSysidStop");
+  if (run)  run.disabled = running;
+  if (stop) stop.hidden  = !running;
+}
+// Track a wrapping ±180° signal into a continuous one. A genuine >180°/sample
+// jump can't happen at the packet rate, so the shortest-arc delta is safe.
+function sidUnwrap(uw, v) {
+  let d = v - uw.raw;
+  d -= 360 * Math.round(d / 360);
+  uw.raw = v; uw.cont += d;
+  return uw.cont;
+}
+
+// Per-packet capture — called from the telemetry handler for every ≥80-byte
+// packet. Timebase = fw t_ms (u32 @60, wrap-safe accumulation), NOT arrival
+// time, so BLE jitter never lands in the log.
+function sidOnPacket(dv) {
+  if (!sid.rec) return;
+  const rawMs = dv.getUint32(60, true);
+  if (sid.lastRaw === null) {
+    sid.accMs = 0;
+  } else {
+    const d = (rawMs - sid.lastRaw) >>> 0;   // wrap-safe fw-clock delta
+    if (d > 5000) return sidStop("telemetry gap/fw reset");   // data unusable across it
+    if (d === 0)  return;                    // duplicate ms — keep t strictly increasing
+    sid.accMs += d;
+  }
+  sid.lastRaw = rawMs;
+  const qimu = dv.getFloat32(64, true), wimu = dv.getFloat32(68, true);
+  const sh   = dv.getFloat32(72, true), wsh  = dv.getFloat32(76, true);
+  let tau = 0;
+  if (dv.byteLength >= 84) { tau = dv.getFloat32(80, true); sid.tauSeen = true; }
+  // Unwrap qimu and sh independently, then derive the shoulder on the
+  // CONTINUOUS values (q1 = qimu + sh, contract (h)).
+  const uq = sidUnwrap(sid.uwQ2 || (sid.uwQ2 = { raw: qimu, cont: qimu }), qimu);
+  const us = sidUnwrap(sid.uwSh || (sid.uwSh = { raw: sh,   cont: sh   }), sh);
+  const D = Math.PI / 180;
+  sid.rows.push({ t: sid.accMs / 1000,
+                  th1: (uq + us) * D, th2: uq * D,
+                  w1: (wimu + wsh) * D, w2: wimu * D, tau });
+  if ((sid.rows.length & 15) === 1)   // pill at ~4 Hz, not per packet
+    sidPill(`sysid: recording — ${sid.rows.length} · ${(sid.accMs / 1000).toFixed(1)} s`, "pill warn");
+}
+
+async function sidStart() {
+  if (sid.rec) return;
+  if (!transport || !transport.isConnected()) return log("Not connected.", "bad");
+  if (!confirm("Run the sysID excitation?\n\nThe robot will drive the elbow through the identification torque pattern (on firmware without AX, nothing actuates — excite by hand instead). Keep hands clear and hold the rig."))
+    return;
+  sid.rows = []; sid.tauSeen = false; sid.lastRaw = null; sid.accMs = 0;
+  sid.uwQ2 = null; sid.uwSh = null;
+  sid.rec = true;
+  const dl = document.getElementById("btnAcroSysidDl");
+  if (dl) dl.disabled = true;   // stale run gone; re-enabled on a good finalize
+  if (!_acroWasActive)   log("⚠ Not in the acrobot plant — no acro packets to record. Switch the plant on first.", "warn");
+  if (!acroState.hang)   log("⚠ Hang cal not set — angles are uncalibrated; run GH first for a usable fit.", "warn");
+  try { await transport.writeCmd("AX\n"); }
+  catch (e) { sid.rec = false; return log("SysID trigger failed: " + errMsg(e), "bad"); }
+  log("SysID — sent AX; recording the acro packet stream (auto-stops on [SID] done, "
+    + `${SID_MAX_MS / 1000} s, or Stop)…`, "ok");
+  sidPill("sysid: waiting for data…", "pill warn");
+  sidButtons(true);
+  sid.timer = setTimeout(() => sidStop("time limit"), SID_MAX_MS);
+}
+
+function sidStop(reason) {
+  if (!sid.rec) return;
+  sid.rec = false;
+  clearTimeout(sid.timer);
+  const n = sid.rows.length, dur = n ? sid.rows[n - 1].t : 0;
+  const ok = n >= SID_MIN_ROWS;
+  const dl = document.getElementById("btnAcroSysidDl");
+  if (dl) dl.disabled = !ok;
+  sidButtons(false);
+  sidPill(ok ? `sysid: ${n} samples · ${dur.toFixed(1)} s · τ ${sid.tauSeen ? "wire" : "zero"}`
+             : `sysid: ${reason} — ${n} samples (need ${SID_MIN_ROWS})`,
+          ok ? "pill ok" : "pill bad");
+  log(`SysID run ${reason}: ${n} samples over ${dur.toFixed(1)} s` + (ok
+      ? ` — ready to download. Torque column: ${sid.tauSeen
+          ? "applied τ off the wire."
+          : "ZERO (no torque telemetry) — fit-valid only if this was a disarmed free swing."}`
+      : " — too short for the fitter; not downloadable."), ok ? "ok" : "warn");
+}
+
+// [SID] lifecycle line → recorder control. Spellings per the proposed contract;
+// matched loosely so fw wording tweaks don't strand a recording.
+function onSidLine(text) {
+  if (!sid.rec) return;
+  if (/\b(done|complete)\b/i.test(text))        sidStop("done (fw)");
+  else if (/\b(abort|reject|fail)/i.test(text)) sidStop("aborted (fw)");
+  else if (/\b(begin|start)/i.test(text))       sidPill("sysid: recording — fw pattern running", "pill warn");
+}
+
+// Build the gymbot logio-schema CSV from the captured rows, resampled onto an
+// exactly uniform grid spanning the same duration with the same sample count.
+function sidBuildCsv() {
+  const rows = sid.rows, n = rows.length;
+  if (n < SID_MIN_ROWS) return null;
+  const T = rows[n - 1].t, dt = T / (n - 1);
+  const meta = {
+    source: "shortor-web acrobot sysid",
+    captured: new Date().toISOString(),
+    fw: (document.getElementById("fwBuildPill")?.textContent || "?").replace(/^fw\s*/, ""),
+    page: document.getElementById("appVer")?.textContent || "",
+    n_raw: n, rate_hz: +(1 / dt).toFixed(3),
+    tau_source: sid.tauSeen
+      ? "wire (applied elbow torque, pkt f32 @80)"
+      : "zero — no torque telemetry; valid only for a disarmed free-swing run",
+    act1: false, act2: true,
+    convention: "theta absolute from upright (rad, unwrapped, +CCW); theta1 = shoulder = qimu+sh, theta2 = IMU link = qimu",
+  };
+  const g = v => String(+v.toPrecision(9));
+  const lines = ["# meta: " + JSON.stringify(meta),
+                 "t,theta1,theta2,dtheta1,dtheta2,tau1,tau2"];
+  let j = 0;
+  for (let k = 0; k < n; k++) {
+    const t = k * dt;
+    while (j < n - 2 && rows[j + 1].t <= t) j++;
+    const a = rows[j], b = rows[j + 1] || a;
+    const f = b.t > a.t ? Math.min(Math.max((t - a.t) / (b.t - a.t), 0), 1) : 0;
+    const L = (x, y) => x + (y - x) * f;
+    const tau2 = t >= b.t ? b.tau : a.tau;   // ZOH — hold, never lerp, the torque
+    lines.push([g(t), g(L(a.th1, b.th1)), g(L(a.th2, b.th2)),
+                g(L(a.w1, b.w1)), g(L(a.w2, b.w2)), "0", g(tau2)].join(","));
+  }
+  return lines.join("\n") + "\n";
+}
+
+const btnSidRun = document.getElementById("btnAcroSysid");
+if (btnSidRun) btnSidRun.onclick = sidStart;
+const btnSidStop = document.getElementById("btnAcroSysidStop");
+if (btnSidStop) btnSidStop.onclick = () => sidStop("stopped");
+const btnSidDl = document.getElementById("btnAcroSysidDl");
+if (btnSidDl) btnSidDl.onclick = () => {
+  const csv = sidBuildCsv();
+  if (!csv) return log("No sysID run captured.", "bad");
+  const ts = new Date(), p = v => String(v).padStart(2, "0");
+  const name = `acro_sysid_${ts.getFullYear()}${p(ts.getMonth() + 1)}${p(ts.getDate())}`
+             + `-${p(ts.getHours())}${p(ts.getMinutes())}${p(ts.getSeconds())}.csv`;
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  log(`SysID log saved as ${name} — upload it to the gymbot SysID app `
+    + "(WSL: sysid_app.py → http://127.0.0.1:8321).", "ok");
 };
 
 const secAcroEl = document.getElementById("secAcro");

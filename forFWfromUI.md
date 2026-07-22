@@ -1,5 +1,43 @@
 # Firmware requests from the web UI
 
+> ## Update 2026-07-21 — SysID: excite → record → fit button SHIPPED (UI side); two asks — `AX` + applied-τ on the wire
+> New in the Acrobot card this page build: a **Run sysID excitation** button. Flow: press →
+> the UI sends **`AX\n`** (proposed spelling — ask 1), records the ≥80-byte packet stream
+> (fw `t_ms` @60 as the timebase — BLE arrival jitter never lands in the log — plus
+> qimu/wimu/sh/wsh @64..76), and exports a **gymbot-schema test-run log**
+> (`t,theta1,theta2,dtheta1,dtheta2,tau1,tau2` CSV; angles absolute-from-upright in rad,
+> unwrapped, uniformly resampled UI-side since `t_ms` is ms-quantized; θ1 = shoulder =
+> qimu+sh, θ2 = IMU link = qimu, per contract (h)). The log feeds the offline parameter
+> fitter (gymbot repo: gradient-descent fit of m1/m2/l1/l2/b1/b2 through the dynamics →
+> LQR synthesis) — fitted `ak0..ak3` come back to the rig through the existing Tuning
+> path. Recording auto-stops on `[SID] done`/`abort`, a 45 s backstop, or the Stop
+> button. Until `AX` exists the button already earns its keep as a **free-swing
+> recorder** (operator flicks the arm while DISARMED → τ ≡ 0 exactly, honest for a
+> passive fit up to overall mass/damping scale; the log's meta block records
+> `tau_source` either way).
+>
+> **Asks (both additive; byteLength-dispatched like every packet growth so far):**
+> 1. **`AX` — run a persistently-exciting elbow torque pattern** while `plant=1`, from a
+>    settled hang; gate on the hang cal (reject like GA without GH). Pattern suggestion —
+>    what the fitter was validated on: **0.15→1.2 Hz chirp + a fresh uniform-random level
+>    held 0.25 s at a time, amp ≈ 0.8·τmax, ~20 s**; an optimal multisine of your own
+>    design is equally welcome — persistence of excitation is what matters, the exact
+>    shape is yours. Tunables if convenient: `acxa` (amp, N·m), `acxs` (duration, s).
+>    Lifecycle lines (the UI keys on these spellings): `[SID] begin dur=<s> amp=<Nm>` ·
+>    `[SID] done` · `[SID] abort <reason>` — done/abort finalize the recorder; all
+>    `[SID]` lines echo to the console. Safety on your side as you see fit (e.g.
+>    auto-abort past a |qimu| threshold).
+> 2. **[PRIORITY] Applied elbow torque on the wire: f32 N·m @80 → 84-byte packet** while
+>    `plant=1` — the torque ACTUALLY applied (post-clip, ZOH over the sample), which is
+>    exactly what the fitter assumes. The UI already parses `byteLength ≥ 84` (this
+>    build) and stamps `tau_source: wire` in the meta. Without it tau2 is written as 0,
+>    so only disarmed free-swing runs are fit-valid — this ask is what makes actuated
+>    (excited/ARMED) runs identifiable, i.e. the full six-parameter fit with the torque
+>    scale pinned.
+>
+> If `AX` collides with an existing command letter, pick any spelling and I'll re-key
+> same-day; on today's fw the unknown-command echo is harmless (the recorder still runs).
+
 > ## Update 2026-07-18 — (h) consumed: q1 = qimu + sh unconditionally, flip toggle deleted
 > Understood — the wire `sh` is acssh-baked, so (e)'s "∓ sh + UI toggle" conflated frames.
 > Shipped this page build: derivation is now **`q1 = qimu + sh`, `w1 = wimu + wsh`, no
