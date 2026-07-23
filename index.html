@@ -1488,6 +1488,15 @@
             <span id="acroSysidPill" class="pill" title="Recorder state. Samples come from the ≥80-byte telemetry packet (fw t_ms @60 timebase; qimu/wimu/sh/wsh @64..76; applied elbow torque @80 once the firmware streams the 84-byte packet).">sysid: idle</span>
             <button id="btnAcroSysidDl" disabled title="Download the captured run as a gymbot-schema .csv (uniformly resampled; angles in rad from upright, unwrapped). Feed it to the SysID app in the gymbot repo (WSL): ~/venv_dp/bin/python sysid_app.py → http://127.0.0.1:8321">Download log (.csv)</button>
           </div>
+          <!-- Batch collection: N back-to-back runs, each with a UNIQUE random
+               excitation (fw seeds the held-random levels from micros() per AX).
+               The collector waits for a settled hang between runs (same
+               thresholds as the fw gate), banks every good run, and downloads
+               the lot as one .zip (STORE — built in-page, no libs). -->
+          <div class="row" style="margin-top: 6px;">
+            <button id="btnAcroSysidBatch" class="needs-conn" title="Run the excitation 10 times back-to-back — each run gets a fresh random pattern (fw per-run seed). Waits for the links to settle between runs; several minutes total. Keep clear the whole time; Stop cancels.">Collect 10 runs</button>
+            <button id="btnAcroSysidZip" disabled title="Download every banked run from the batch as one .zip (run01.csv … run10.csv, gymbot schema).">Download batch (.zip)</button>
+          </div>
           <!-- acxa/acxs sliders — bespoke (send Cu blind like ak0..3): the fw
                [TUN] dump truncates at 256 B before reaching them, so they can't
                ride the self-describing panel until that's fixed fw-side. -->
@@ -1659,7 +1668,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "a879a1f+", date: "2026-07-22" };
+const APP_BUILD = { id: "a9e45dc+", date: "2026-07-23" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -5289,7 +5298,9 @@ function syncAcroArm(val) {
 }
 
 function resetAcro() {
+  sidBatch.cancel = true;              // a dead link ends a batch; banked runs are kept
   if (sid.rec) sidStop("link lost");   // finalize (not discard) a mid-run capture
+  else if (sidBatch.active) sidBatchEnd("link lost");
   acroState.valid = false; acroState.q1 = 0; acroState.q2 = 0; acroState.hang = 0;
   acroState.w1 = 0; acroState.w2 = 0; acroState.t = 0;
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
@@ -5635,7 +5646,9 @@ if (acroArmEl) acroArmEl.onchange = (e) => {
 const SID_MAX_MS   = 45000;  // auto-stop backstop (fw pattern proposed ~20 s)
 const SID_MIN_ROWS = 120;    // fitter rejects <100 samples; margin for resample
 const sid = { rec: false, rows: [], tauSeen: false, lastRaw: null, accMs: 0,
-              uwQ2: null, uwSh: null, timer: 0 };
+              uwQ2: null, uwSh: null, timer: 0,
+              beginInfo: null,     // parsed [SID] begin tokens (dur/amp/gov) → log meta
+              onFinalize: null };  // batch-collector hook, called at the end of sidStop
 
 function sidPill(txt, cls) {
   const el = document.getElementById("acroSysidPill");
@@ -5687,31 +5700,44 @@ function sidOnPacket(dv) {
     sidPill(`sysid: recording — ${sid.rows.length} · ${(sid.accMs / 1000).toFixed(1)} s`, "pill warn");
 }
 
-async function sidStart() {
-  if (sid.rec) return;
-  if (!transport || !transport.isConnected()) return log("Not connected.", "bad");
-  if (!confirm("Run the sysID excitation?\n\nThe robot will drive the elbow through the identification torque pattern (on firmware without AX, nothing actuates — excite by hand instead). Keep hands clear and hold the rig."))
-    return;
-  sid.rows = []; sid.tauSeen = false; sid.lastRaw = null; sid.accMs = 0;
-  sid.uwQ2 = null; sid.uwSh = null;
-  sid.rec = true;
-  const dl = document.getElementById("btnAcroSysidDl");
-  if (dl) dl.disabled = true;   // stale run gone; re-enabled on a good finalize
-  // Pre-warn the fw gates (fw ≥2021 rejects AX with a [SID] abort naming the
-  // gate: plant=1 → GH → disarmed → no cal → settled hang). The warnings here
-  // catch the two the UI can see before the round-trip.
+// Pre-warn the fw gates (fw ≥2021 rejects AX with a [SID] abort naming the
+// gate: plant=1 → GH → disarmed → no cal → settled hang). The warnings here
+// catch the ones the UI can see before the round-trip.
+function sidWarnGates() {
   if (!_acroWasActive)   log("⚠ Not in the acrobot plant — no acro packets to record. Switch the plant on first.", "warn");
   if (!acroState.hang)   log("⚠ Hang cal not set — firmware rejects AX without GH (and angles would be uncalibrated).", "warn");
   if (tunState.acarm == 1) log("⚠ Controller is ARMED — firmware rejects AX while armed (disarm → excite → re-arm).", "warn");
   if (Math.abs(acroState.q2) < 149 && acroState.valid)
     log("⚠ Links not at settled hang (|qimu| > ~149° and still) — firmware will abort not-settled.", "warn");
+}
+
+// Clear state + send AX + arm the backstop. Shared by the single-run button
+// (which confirms first) and the batch collector (one confirm for the batch).
+async function sidBeginRun() {
+  sid.rows = []; sid.tauSeen = false; sid.lastRaw = null; sid.accMs = 0;
+  sid.uwQ2 = null; sid.uwSh = null; sid.beginInfo = null;
+  sid.rec = true;
+  const dl = document.getElementById("btnAcroSysidDl");
+  if (dl) dl.disabled = true;   // stale run gone; re-enabled on a good finalize
   try { await transport.writeCmd("AX\n"); }
-  catch (e) { sid.rec = false; return log("SysID trigger failed: " + errMsg(e), "bad"); }
-  log("SysID — sent AX; recording the acro packet stream (auto-stops on [SID] done, "
-    + `${SID_MAX_MS / 1000} s, or Stop)…`, "ok");
-  sidPill("sysid: waiting for data…", "pill warn");
+  catch (e) { sid.rec = false; log("SysID trigger failed: " + errMsg(e), "bad"); return false; }
   sidButtons(true);
   sid.timer = setTimeout(() => sidStop("time limit"), SID_MAX_MS);
+  return true;
+}
+
+async function sidStart() {
+  if (sid.rec || sidBatch.active) return;
+  if (!transport || !transport.isConnected()) return log("Not connected.", "bad");
+  if (!confirm("Run the sysID excitation?\n\nThe robot will drive the elbow through the identification torque pattern (on firmware without AX, nothing actuates — excite by hand instead). Keep hands clear and hold the rig."))
+    return;
+  sid.onFinalize = null;
+  sidWarnGates();
+  if (await sidBeginRun()) {
+    log("SysID — sent AX; recording the acro packet stream (auto-stops on [SID] done, "
+      + `${SID_MAX_MS / 1000} s, or Stop)…`, "ok");
+    sidPill("sysid: waiting for data…", "pill warn");
+  }
 }
 
 function sidStop(reason) {
@@ -5731,6 +5757,7 @@ function sidStop(reason) {
           ? "applied τ off the wire."
           : "ZERO (no torque telemetry) — fit-valid only if this was a disarmed free swing."}`
       : " — too short for the fitter; not downloadable."), ok ? "ok" : "warn");
+  if (sid.onFinalize) sid.onFinalize(reason, ok, n, dur);   // batch collector hook
 }
 
 // [SID] lifecycle line → recorder control (contract live in fw ≥2021; matched
@@ -5752,13 +5779,20 @@ function onSidLine(text) {
       clearTimeout(sid.timer);
       sid.timer = setTimeout(() => sidStop("time limit"), (parseFloat(dm[1]) + 5) * 1000);
     }
+    // Capture the run parameters for the log meta (amp is post-auto-resolve;
+    // gov= = the fw amplitude governor is active, fw ≥1438).
+    sid.beginInfo = { dur: dm ? parseFloat(dm[1]) : null,
+                      amp_V: parseFloat((text.match(/\bamp=([\d.]+)/) || [])[1]) || null,
+                      gov: (text.match(/\bgov=(\S+)/) || [])[1] || null };
     sidPill("sysid: recording — fw pattern running", "pill warn");
   }
 }
 
 // Build the gymbot logio-schema CSV from the captured rows, resampled onto an
 // exactly uniform grid spanning the same duration with the same sample count.
-function sidBuildCsv() {
+// extraMeta (optional) is merged into the meta block — the batch collector
+// stamps run numbering there.
+function sidBuildCsv(extraMeta) {
   const rows = sid.rows, n = rows.length;
   if (n < SID_MIN_ROWS) return null;
   const T = rows[n - 1].t, dt = T / (n - 1);
@@ -5779,6 +5813,14 @@ function sidBuildCsv() {
     act1: false, act2: true,
     convention: "theta absolute from upright (rad, unwrapped, +CCW); theta1 = shoulder = qimu+sh, theta2 = IMU link = qimu",
   };
+  // Excitation provenance ([SID] begin tokens): chirp is identical run-to-run
+  // but the held-random half is seeded from fw micros() per AX, so every run
+  // is a unique input. gov set ⇒ fw amplitude governor active (mild state
+  // dependence near the ceiling; tau2 is the post-governor APPLIED value, so
+  // the fit conditions on the true input either way — fw note 2026-07-22).
+  if (sid.beginInfo) meta.excitation = Object.assign(
+    { pattern: "chirp 0.15-1.2 Hz + 0.25 s held-random, per-run fw seed" }, sid.beginInfo);
+  if (extraMeta) Object.assign(meta, extraMeta);
   const g = v => String(+v.toPrecision(9));
   const lines = ["# meta: " + JSON.stringify(meta),
                  "t,theta1,theta2,dtheta1,dtheta2,tau1,tau2"];
@@ -5843,14 +5885,21 @@ const btnSidRun = document.getElementById("btnAcroSysid");
 if (btnSidRun) btnSidRun.onclick = sidStart;
 const btnSidStop = document.getElementById("btnAcroSysidStop");
 if (btnSidStop) btnSidStop.onclick = () => {
-  // AX while a run is active = operator stop (fw ≥2021) — kills the excitation
-  // torque immediately. Without this the recorder would close while the pattern
-  // keeps shaking the rig for the rest of its duration. Fire-and-forget: the
-  // [SID] abort operator echo lands after sid.rec is already false.
-  if (transport && transport.isConnected()) {
-    try { transport.writeCmd("AX\n"); } catch (e) { /* recorder still finalizes */ }
+  // Cancel a batch first so the finalize chain lands in sidBatchEnd (banked
+  // runs are kept). Then, if a run is live: AX while active = operator stop
+  // (fw ≥2021) — kills the excitation torque immediately. Without it the
+  // recorder would close while the pattern keeps shaking the rig for the rest
+  // of its duration. Fire-and-forget: the [SID] abort operator echo lands
+  // after sid.rec is already false.
+  sidBatch.cancel = true;
+  if (sid.rec) {
+    if (transport && transport.isConnected()) {
+      try { transport.writeCmd("AX\n"); } catch (e) { /* recorder still finalizes */ }
+    }
+    sidStop("stopped");
+  } else if (sidBatch.active) {
+    sidBatchEnd("cancelled");   // was in a settle-wait — no torque to kill
   }
-  sidStop("stopped");
 };
 const btnSidDl = document.getElementById("btnAcroSysidDl");
 if (btnSidDl) btnSidDl.onclick = () => {
@@ -5865,6 +5914,164 @@ if (btnSidDl) btnSidDl.onclick = () => {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
   log(`SysID log saved as ${name} — upload it to the gymbot SysID app `
     + "(WSL: sysid_app.py → http://127.0.0.1:8321).", "ok");
+};
+
+// ─── SysID batch collector — N runs, each a unique excitation ───────────────
+// One press → wait for a settled hang (same thresholds as the fw AX gate),
+// excite + record, bank the run, wait for re-settle, repeat until N good runs.
+// Uniqueness is free: fw seeds the held-random levels from micros() per AX
+// (confirmed in source, build ≥2021), so no two runs share an input. Banked
+// runs survive a cancelled/failed batch — you keep whatever was collected.
+const SID_BATCH_N = 10;
+const SID_SETTLE_Q_DEG = 149, SID_SETTLE_W_DPS = 20;     // mirror the fw settled-hang gate
+const SID_SETTLE_HOLD_MS = 1500;                          // must hold settled this long
+const SID_SETTLE_TIMEOUT_MS = 120000;                     // lightly damped rig takes a while
+const sidBatch = { active: false, cancel: false, runs: [], target: SID_BATCH_N,
+                   fails: 0, timer: 0 };
+
+async function sidBatchStart() {
+  if (sidBatch.active || sid.rec) return;
+  if (!transport || !transport.isConnected()) return log("Not connected.", "bad");
+  if (!_acroWasActive) return log("Switch to the acrobot plant first.", "bad");
+  if (!acroState.hang) return log("Run the hang cal (GH) first.", "bad");
+  if (!confirm(`Collect ${sidBatch.target} sysID runs?\n\nThe robot will excite ${sidBatch.target} times back-to-back — each run a fresh random pattern — waiting for the links to settle between runs (several minutes total). Keep clear the whole time; Stop cancels and keeps the runs already banked.`))
+    return;
+  sidWarnGates();
+  sidBatch.active = true; sidBatch.cancel = false; sidBatch.runs = []; sidBatch.fails = 0;
+  const zb = document.getElementById("btnAcroSysidZip"); if (zb) zb.disabled = true;
+  const bb = document.getElementById("btnAcroSysidBatch"); if (bb) bb.disabled = true;
+  const rb = document.getElementById("btnAcroSysid"); if (rb) rb.disabled = true;
+  const st = document.getElementById("btnAcroSysidStop"); if (st) st.hidden = false;
+  log(`SysID batch — collecting ${sidBatch.target} uniquely-excited runs…`, "ok");
+  sidBatchNext();
+}
+
+// Settle-wait → run → (sidStop → sidBatchRunDone) → back here. 200 ms poll on
+// the live motion feed; the run only launches after the settled condition has
+// held ~1.5 s, so AX never burns a round-trip on the fw's not-settled reject.
+function sidBatchNext() {
+  if (!sidBatch.active) return;
+  if (sidBatch.cancel) return sidBatchEnd("cancelled");
+  if (sidBatch.runs.length >= sidBatch.target) return sidBatchEnd("complete");
+  const idx = sidBatch.runs.length + 1;
+  sidPill(`batch ${idx}/${sidBatch.target}: waiting for settled hang…`, "pill warn");
+  let heldMs = 0; const t0 = performance.now();
+  clearInterval(sidBatch.timer);
+  sidBatch.timer = setInterval(async () => {
+    if (!sidBatch.active) return clearInterval(sidBatch.timer);
+    if (sidBatch.cancel) { clearInterval(sidBatch.timer); return sidBatchEnd("cancelled"); }
+    if (performance.now() - t0 > SID_SETTLE_TIMEOUT_MS) {
+      clearInterval(sidBatch.timer);
+      return sidBatchEnd("settle timeout — links never came to rest");
+    }
+    const fresh = acroState.valid && (performance.now() - acroState.t) < 1000;
+    const settled = fresh && Math.abs(acroState.q2) > SID_SETTLE_Q_DEG &&
+                    Math.abs(acroState.w1) < SID_SETTLE_W_DPS &&
+                    Math.abs(acroState.w2) < SID_SETTLE_W_DPS;
+    heldMs = settled ? heldMs + 200 : 0;
+    if (heldMs < SID_SETTLE_HOLD_MS) return;
+    clearInterval(sidBatch.timer);
+    sid.onFinalize = sidBatchRunDone;
+    sidPill(`batch ${idx}/${sidBatch.target}: exciting…`, "pill warn");
+    if (!await sidBeginRun()) { sid.onFinalize = null; sidBatchEnd("AX send failed"); }
+  }, 200);
+}
+
+function sidBatchRunDone(reason, ok, n, dur) {
+  if (!sidBatch.active) return;
+  sid.onFinalize = null;   // re-armed per run by sidBatchNext
+  const idx = sidBatch.runs.length + 1;
+  if (ok) {
+    const csv = sidBuildCsv({ batch_run: idx, batch_of: sidBatch.target, run_end: reason });
+    if (csv) {
+      sidBatch.runs.push({ name: `run${String(idx).padStart(2, "0")}.csv`, text: csv });
+      sidBatch.fails = 0;
+      log(`SysID batch: run ${idx}/${sidBatch.target} banked (${n} samples, ${dur.toFixed(1)} s, ${reason}).`, "ok");
+    }
+  } else {
+    sidBatch.fails++;
+    log(`SysID batch: attempt failed (${reason}) — ${sidBatch.fails}/3 consecutive.`, "warn");
+    if (sidBatch.fails >= 3) return sidBatchEnd("3 consecutive failed runs");
+  }
+  sidBatchNext();
+}
+
+function sidBatchEnd(reason) {
+  if (!sidBatch.active) return;
+  clearInterval(sidBatch.timer);
+  sidBatch.active = false; sid.onFinalize = null;
+  const k = sidBatch.runs.length;
+  const bb = document.getElementById("btnAcroSysidBatch"); if (bb) bb.disabled = false;
+  const rb = document.getElementById("btnAcroSysid"); if (rb) rb.disabled = false;
+  const st = document.getElementById("btnAcroSysidStop"); if (st) st.hidden = true;
+  const zb = document.getElementById("btnAcroSysidZip"); if (zb) zb.disabled = (k === 0);
+  sidPill(`batch ${reason}: ${k}/${sidBatch.target} runs banked`,
+          k >= sidBatch.target ? "pill ok" : (k ? "pill warn" : "pill bad"));
+  log(`SysID batch ${reason} — ${k} run${k === 1 ? "" : "s"} banked` +
+      (k ? " (Download batch .zip)." : "."), k ? "ok" : "warn");
+}
+
+// ─── Minimal ZIP writer (STORE, no compression) ─────────────────────────────
+// The app is one self-contained file (no JSZip, and the CSP-free single-file
+// rule holds), so the batch download builds a stored ZIP by hand: local file
+// headers + central directory + EOCD, CRC-32 per entry. CSVs are small; the
+// win is ONE download tap instead of ten permission-prompted ones.
+const _crcTable = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = _crcTable[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function makeZip(files) {   // files: [{name, text}] → Blob
+  const enc = new TextEncoder();
+  const u16 = v => new Uint8Array([v & 255, (v >> 8) & 255]);
+  const u32 = v => new Uint8Array([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]);
+  const now = new Date();
+  const dosTime = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xFFFF;
+  const dosDate = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xFFFF;
+  const parts = [], entries = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), data = enc.encode(f.text), crc = crc32(data);
+    parts.push(u32(0x04034b50), u16(20), u16(0), u16(0), u16(dosTime), u16(dosDate),
+               u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0),
+               name, data);
+    entries.push({ name, data, crc, offset });
+    offset += 30 + name.length + data.length;
+  }
+  const cdStart = offset;
+  for (const e of entries) {
+    parts.push(u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(dosTime), u16(dosDate),
+               u32(e.crc), u32(e.data.length), u32(e.data.length), u16(e.name.length),
+               u16(0), u16(0), u16(0), u16(0), u32(0), u32(e.offset), e.name);
+    offset += 46 + e.name.length;
+  }
+  parts.push(u32(0x06054b50), u16(0), u16(0), u16(entries.length), u16(entries.length),
+             u32(offset - cdStart), u32(cdStart), u16(0));
+  return new Blob(parts, { type: "application/zip" });
+}
+
+const btnSidBatch = document.getElementById("btnAcroSysidBatch");
+if (btnSidBatch) btnSidBatch.onclick = sidBatchStart;
+const btnSidZip = document.getElementById("btnAcroSysidZip");
+if (btnSidZip) btnSidZip.onclick = () => {
+  if (!sidBatch.runs.length) return log("No batch runs banked.", "bad");
+  const ts = new Date(), p = v => String(v).padStart(2, "0");
+  const name = `acro_sysid_batch_${ts.getFullYear()}${p(ts.getMonth() + 1)}${p(ts.getDate())}`
+             + `-${p(ts.getHours())}${p(ts.getMinutes())}${p(ts.getSeconds())}.zip`;
+  const url = URL.createObjectURL(makeZip(sidBatch.runs));
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  log(`SysID batch saved as ${name} (${sidBatch.runs.length} runs) — unzip and fit in the gymbot app.`, "ok");
 };
 
 const secAcroEl = document.getElementById("secAcro");
