@@ -1668,7 +1668,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "a9e45dc+", date: "2026-07-23" };
+const APP_BUILD = { id: "ec74a9a+", date: "2026-10-24" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1739,11 +1739,14 @@ function lpfValueOf(p, sraw) {
 }
 function lpfSliderOf(p, val) {
   if (p.scale === "log") {
-    const r = Math.max(p.lo, Math.min(p.hi, val));
-    return 100 * Math.log(r / p.lo) / Math.log(p.hi / p.lo);
+    const clamped = Math.max(p.lo, Math.min(p.hi, val));
+    return 100 * Math.log(clamped / p.lo) / Math.log(p.hi / p.lo);
   }
   return val;
 }
+// key → param definition, so lookups don't scan the tables.
+const PARAM_BY_KEY = Object.fromEntries(PARAMS.map(p => [p.key, p]));
+const LQR_BY_KEY   = Object.fromEntries(LQR_PARAMS.map(p => [p.key, p]));
 
 // Firmware native unit for shaft motion is rad. The web app converts
 // to cart distance in mm: distance_mm = shaft_rad × WHEEL_RADIUS_MM.
@@ -1793,50 +1796,66 @@ function errMsg(e) {
 let lastLogMsg  = null;
 let lastLogEl   = null;
 let lastLogN    = 1;
+const LOG_COLORS = { bad: "#ff8a82", ok: "#62e08c", warn: "#f1c34c" };
+const logStamp = (msg) => `${new Date().toLocaleTimeString()}  ${msg}`;
+function scrollConsoleToEnd() { consoleEl.scrollTop = consoleEl.scrollHeight; }
 function log(msg, cls) {
   // Dedupe repeats — collapses error storms into "msg (×N)".
   if (msg === lastLogMsg && lastLogEl) {
     lastLogN += 1;
-    lastLogEl.textContent =
-      `${new Date().toLocaleTimeString()}  ${msg} (×${lastLogN})`;
-    consoleEl.scrollTop = consoleEl.scrollHeight;
+    lastLogEl.textContent = logStamp(`${msg} (×${lastLogN})`);
+    scrollConsoleToEnd();
     return;
   }
-  const line = `${new Date().toLocaleTimeString()}  ${msg}`;
   const span = document.createElement("div");
-  span.textContent = line;
-  if (cls === "bad")  span.style.color = "#ff8a82";
-  if (cls === "ok")   span.style.color = "#62e08c";
-  if (cls === "warn") span.style.color = "#f1c34c";
+  span.textContent = logStamp(msg);
+  if (LOG_COLORS[cls]) span.style.color = LOG_COLORS[cls];
   consoleEl.appendChild(span);
   while (consoleEl.childElementCount > 400) consoleEl.removeChild(consoleEl.firstChild);
-  consoleEl.scrollTop = consoleEl.scrollHeight;
+  scrollConsoleToEnd();
   lastLogMsg = msg; lastLogEl = span; lastLogN = 1;
+}
+
+// Small DOM/format helpers shared across the panels. Elements may be absent
+// (layout variants), so the setters are no-ops for a missing id.
+function setText(id, txt) { const el = document.getElementById(id); if (el) el.textContent = txt; }
+function setPill(id, txt, cls) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = txt; el.className = cls; }
+}
+const isMissing   = v => v == null || Number.isNaN(v);
+const signedFixed = (v, dp) => `${v >= 0 ? "+" : ""}${v.toFixed(dp)}`;   // "+1.20" / "-0.50"
+const toDeg       = rad => rad * 180 / Math.PI;
+const sleep       = ms => new Promise(r => setTimeout(r, ms));
+// Size a canvas's backing store to its CSS box × devicePixelRatio.
+function fitCanvas(canvas) {
+  const dpr = devicePixelRatio || 1;
+  const w = canvas.width  = canvas.clientWidth  * dpr;
+  const h = canvas.height = canvas.clientHeight * dpr;
+  return { ctx: canvas.getContext("2d"), w, h, dpr };
+}
+// Standard .slider-row skeleton: label + value readout; the caller adds the input.
+function makeSliderRow(labelText) {
+  const row = document.createElement("div"); row.className = "slider-row";
+  const lbl = document.createElement("label"); lbl.textContent = labelText;
+  const val = document.createElement("span"); val.className = "value";
+  row.appendChild(lbl); row.appendChild(val);
+  return { row, lbl, val };
 }
 
 // Live lift-detector confidence chip — coherence ∈ [0,1] from [SYS]/[ATT]
 // events. Colour steps good (≥.6) → marginal (≥.3) → untrustworthy (<.3).
 function setCoh(v) {
-  const el = document.getElementById("liveCoh");
-  if (!el) return;
-  if (v === null || v === undefined || Number.isNaN(v)) {
-    el.textContent = "coh —"; el.className = "pill"; return;
-  }
+  if (isMissing(v)) return setPill("liveCoh", "coh —", "pill");
   v = Math.max(0, Math.min(1, v));
-  el.textContent = `coh ${v.toFixed(2)}`;
-  el.className = "pill " + (v >= 0.6 ? "ok" : v >= 0.3 ? "warn" : "bad");
+  setPill("liveCoh", `coh ${v.toFixed(2)}`, "pill " + (v >= 0.6 ? "ok" : v >= 0.3 ? "warn" : "bad"));
 }
 
 // Live ground-contact chip — Wa (g/V) vs its gate from [SYS]/[ATT]. Above the
 // threshold (the firmware shows "wa=0.55(>0.42)") = on the ground → green.
 function setContact(v, ground) {
-  const el = document.getElementById("liveContact");
-  if (!el) return;
-  if (v === null || v === undefined || Number.isNaN(v)) {
-    el.textContent = "wa —"; el.className = "pill"; return;
-  }
-  el.textContent = `wa ${v.toFixed(2)} ${ground ? "gnd" : "air"}`;
-  el.className = "pill " + (ground ? "ok" : "warn");
+  if (isMissing(v)) return setPill("liveContact", "wa —", "pill");
+  setPill("liveContact", `wa ${v.toFixed(2)} ${ground ? "gnd" : "air"}`, "pill " + (ground ? "ok" : "warn"));
 }
 
 // ─── Probe-sweep capture (A/B/C/D condition×grip slots) ──────────────────────
@@ -1897,14 +1916,15 @@ const sweepRunByCG = (cond, grip) => {
 function showSweepStale(text) {
   const el = document.getElementById("sweepStale");
   if (!el) return;
-  const d = document.getElementById("sweepStaleDetail");
-  let detail = "";
-  let m;
-  if ((m = text.match(/probe freq=([\d.]+)/i)))                detail = `(probe set to ${+m[1]} Hz)`;
-  else if ((m = text.match(/at\s*([\d.]+)\s*Hz.*?probe is\s*([\d.]+)\s*Hz/i)))
-                                                              detail = `(saved @ ${m[1]} Hz, probe now ${m[2]} Hz)`;
-  if (d) d.textContent = detail;
+  setText("sweepStaleDetail", sweepStaleDetail(text));
   el.hidden = false;
+}
+function sweepStaleDetail(text) {
+  let m;
+  if ((m = text.match(/probe freq=([\d.]+)/i)))  return `(probe set to ${+m[1]} Hz)`;
+  if ((m = text.match(/at\s*([\d.]+)\s*Hz.*?probe is\s*([\d.]+)\s*Hz/i)))
+    return `(saved @ ${m[1]} Hz, probe now ${m[2]} Hz)`;
+  return "";
 }
 function hideSweepStale() { const el = document.getElementById("sweepStale"); if (el) el.hidden = true; }
 
@@ -1912,19 +1932,22 @@ function hideSweepStale() { const el = document.getElementById("sweepStale"); if
 // FW doesn't echo them in [SYS], so the UI is the source of truth (write-through),
 // but we sync the controls FROM the wire when the cal / [CAL] echoes reveal a value.
 let cfgProbeF = 100, cfgWaThr = 0.42;
+// Wire → control, skipped while the user is editing that control.
+function syncCfgInput(id, text) {
+  const el = document.getElementById(id);
+  if (el && document.activeElement !== el) el.value = text;
+}
+const showWaThreshold = gPerV => setText("cfgWaThrVal", `${gPerV.toFixed(2)} g/V`);
 function syncProbeF(hz) {
-  if (hz == null || Number.isNaN(hz)) return;
+  if (isMissing(hz)) return;
   cfgProbeF = hz;
-  const el = document.getElementById("cfgProbeF");
-  if (el && document.activeElement !== el) el.value = String(+hz.toFixed(hz < 10 ? 1 : 0));
+  syncCfgInput("cfgProbeF", String(+hz.toFixed(hz < 10 ? 1 : 0)));
 }
 function syncWaThr(v) {
-  if (v == null || Number.isNaN(v)) return;
+  if (isMissing(v)) return;
   cfgWaThr = v;
-  const el = document.getElementById("cfgWaThr");
-  if (el && document.activeElement !== el) el.value = String(v);
-  const lbl = document.getElementById("cfgWaThrVal");
-  if (lbl) lbl.textContent = `${v.toFixed(2)} g/V`;
+  syncCfgInput("cfgWaThr", String(v));
+  showWaThreshold(v);
 }
 
 // Shared log-frequency x-axis so the overlay and delta charts read as one
@@ -1952,15 +1975,19 @@ function sweepLogAxis(ctx, dpr, pad, w, h, lo, hi) {
   ctx.font = `${10 * dpr}px 'IBM Plex Mono', monospace`;
   for (const f of sweepXTicks(lo, hi)) {
     const x = X(f);
-    ctx.strokeStyle = "#18242a"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
-    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
-    ctx.setLineDash([]);
+    sweepVRule(ctx, x, pad, h, "#18242a", 1, [2, 4]);
     ctx.textAlign = "center"; ctx.textBaseline = "top";
     ctx.fillText(String(f), x, h - pad.b + 4 * dpr);
   }
   ctx.textAlign = "right"; ctx.textBaseline = "bottom";
   ctx.fillText("Hz", w - pad.r, h - 1 * dpr);
   return X;
+}
+// Dashed full-height vertical rule at x (plot area pad.t .. h − pad.b).
+function sweepVRule(ctx, x, pad, h, color, width, dash) {
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash);
+  ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
+  ctx.setLineDash([]);
 }
 
 function updateSweepPicker() {
@@ -1975,6 +2002,15 @@ function updateSweepPicker() {
   }
 }
 
+// Pairing-result tokens carried by both the "paired" and "saved" lines.
+const SWEEP_RESULT_TOKENS = {
+  f:        /\bf=([-\d.]+)/,
+  wa_thr:   /\bwa_thr=([-\d.]+)/,
+  ratio:    /\bratio=([-\d.]+)/,
+  dphi_thr: /\bdphi_thr=([-\d.]+)/,
+  r_thr:    /\br_thr=([-\d.]+)/,
+};
+const newSweepRun = () => ({ rows: [], done: false });
 function captureSweepLine(text) {
   const body = text.replace(/^\[SWP\]\s*/i, "");
   const num = (re) => { const m = body.match(re); return m ? parseFloat(m[1]) : null; };
@@ -1982,7 +2018,7 @@ function captureSweepLine(text) {
   // "pass=N begin" — (re)start capturing into the armed slot. A fresh sweep
   // also clears any stale-cal warning (running W is what fixes it).
   if (/^pass=\d+\s+begin/i.test(body)) {
-    sweepRuns[sweepArmed] = { rows: [], done: false };
+    sweepRuns[sweepArmed] = newSweepRun();
     hideSweepStale();
     updateSweepPicker(); refreshSweep();
     return;
@@ -1997,31 +2033,13 @@ function captureSweepLine(text) {
   // "paired …" / "saved …" — the FW auto-cal's pairing result (rev 2: the gate is
   // wa_thr (g/V) + ratio (ground/air Wa); dphi_thr/r_thr are diagnostics; sep gone).
   if (/^paired\b/i.test(body)) {
-    sweepResult = {
-      f:        num(/\bf=([-\d.]+)/),
-      wa_thr:   num(/\bwa_thr=([-\d.]+)/),
-      ratio:    num(/\bratio=([-\d.]+)/),
-      wa_ratio: num(/\bwa_ratio=([-\d.]+)/),       // reject case
-      wa_min:   num(/\(<\s*([-\d.]+)\s*\)/),        // reject min, e.g. "(<2.0)"
-      dphi_thr: num(/\bdphi_thr=([-\d.]+)/),
-      r_thr:    num(/\br_thr=([-\d.]+)/),
-      rejected: /unchanged/i.test(body) || num(/\bground=(\d+)/) === null,
-      saved:    false,
-    };
+    sweepResult = parseSweepPaired(body, num);
     if (!sweepResult.rejected) { syncProbeF(sweepResult.f); syncWaThr(sweepResult.wa_thr); }
     refreshSweep();
     return;
   }
   if (/^saved\b/i.test(body)) {
-    sweepResult = sweepResult || {};
-    const keep = (v, prev) => (v === null ? prev : v);
-    sweepResult.f        = keep(num(/\bf=([-\d.]+)/),        sweepResult.f);
-    sweepResult.wa_thr   = keep(num(/\bwa_thr=([-\d.]+)/),   sweepResult.wa_thr);
-    sweepResult.ratio    = keep(num(/\bratio=([-\d.]+)/),    sweepResult.ratio);
-    sweepResult.dphi_thr = keep(num(/\bdphi_thr=([-\d.]+)/), sweepResult.dphi_thr);
-    sweepResult.r_thr    = keep(num(/\br_thr=([-\d.]+)/),    sweepResult.r_thr);
-    sweepResult.rejected = false;
-    sweepResult.saved    = true;
+    sweepResult = mergeSweepSaved(sweepResult || {}, num);
     syncProbeF(sweepResult.f); syncWaThr(sweepResult.wa_thr);
     hideSweepStale();
     refreshSweep();
@@ -2031,18 +2049,43 @@ function captureSweepLine(text) {
   if (!/\bf=/.test(body)) return;
 
   // Per-frequency data row → the armed slot.
+  const row = parseSweepRow(num);
+  if (!row) return;
+  if (!sweepRuns[sweepArmed]) sweepRuns[sweepArmed] = newSweepRun();
+  sweepRuns[sweepArmed].rows.push(row);
+  updateSweepPicker(); refreshSweep();
+}
+function parseSweepPaired(body, num) {
+  const res = {};
+  for (const [k, re] of Object.entries(SWEEP_RESULT_TOKENS)) res[k] = num(re);
+  res.wa_ratio = num(/\bwa_ratio=([-\d.]+)/);       // reject case
+  res.wa_min   = num(/\(<\s*([-\d.]+)\s*\)/);        // reject min, e.g. "(<2.0)"
+  res.rejected = /unchanged/i.test(body) || num(/\bground=(\d+)/) === null;
+  res.saved    = false;
+  return res;
+}
+// "saved" (NVS write) — keep any prior value the line doesn't restate.
+function mergeSweepSaved(res, num) {
+  for (const [k, re] of Object.entries(SWEEP_RESULT_TOKENS)) {
+    const v = num(re);
+    if (v !== null) res[k] = v;
+  }
+  res.rejected = false;
+  res.saved    = true;
+  return res;
+}
+// One per-frequency data row, or null when it has no f / phase / ratio.
+function parseSweepRow(num) {
   const f = num(/\bf=([-\d.]+)/);
   const dphi = num(/\bdphi=([-\d.]+)/), r = num(/\br=([-\d.]+)/);
-  if (f === null || (dphi === null && r === null)) return;
-  if (!sweepRuns[sweepArmed]) sweepRuns[sweepArmed] = { rows: [], done: false };
-  sweepRuns[sweepArmed].rows.push({
+  if (f === null || (dphi === null && r === null)) return null;
+  return {
     f, dphi, r,
     Vf:  num(/\bVf=([-\d.]+)/),
     Wg:  num(/\bWg=([-\d.]+)/),
     Wa:  num(/\bWa=([-\d.]+)/),
     dpa: num(/\bdpa=([-\d.]+)/),
-  });
-  updateSweepPicker(); refreshSweep();
+  };
 }
 
 function clearSweep() {
@@ -2053,50 +2096,78 @@ function clearSweep() {
 
 function refreshSweep() { renderSweepTable(); drawSweepCharts(); }
 
+const sweepMetricDef = () => SWEEP_METRICS.find(m => m.k === sweepMetric) || SWEEP_METRICS[0];
+const sweepCellText = (v, dp) => isMissing(v) ? "·" : v.toFixed(dp);
+// Distinct frequencies of a set of {f} items, ascending.
+const sweepSortedFreqs = items => [...new Set(items.map(x => x.f).filter(v => v != null))].sort((a, b) => a - b);
+// f → first row at that frequency (the row rows.find would pick), built once
+// per run so per-frequency lookups don't rescan the rows.
+function sweepRowIndex(run) {
+  const index = new Map();
+  if (run) for (const x of run.rows) if (!index.has(x.f)) index.set(x.f, x);
+  return index;
+}
+// Metric value at frequency f from a sweepRowIndex map, or null if no row there.
+const sweepMetricAt = (rowIndex, f, metric) => { const row = rowIndex.get(f); return row ? row[metric] : null; };
+// Air/ground pairs (one per grip) where both conditions were captured.
+function sweepGripPairs() {
+  const pairs = [];
+  for (const grip of ["firm", "loose"]) {
+    const ground = sweepRunByCG("ground", grip), air = sweepRunByCG("air", grip);
+    if (ground && air) pairs.push({ grip, freqs: sweepSortedFreqs([...ground.rows, ...air.rows]),
+                                    ground: sweepRowIndex(ground), air: sweepRowIndex(air) });
+  }
+  return pairs;
+}
+// air − ground of metric k at f, or null if either side lacks it.
+function sweepSepAt(pair, f, k) {
+  const gv = sweepMetricAt(pair.ground, f, k), av = sweepMetricAt(pair.air, f, k);
+  return (gv == null || av == null) ? null : av - gv;
+}
+// Probe tone of an applied/saved (not rejected) pairing, else null.
+const sweepAppliedProbe = () =>
+  (sweepResult && sweepResult.f != null && !sweepResult.rejected) ? sweepResult.f : null;
+
 function renderSweepTable() {
   const tbl = document.getElementById("sweepTable");
   if (!tbl) return;
   const caps = sweepCaptured();
   if (!caps.length) { tbl.hidden = true; tbl.innerHTML = ""; return; }
-  const M = SWEEP_METRICS.find(m => m.k === sweepMetric) || SWEEP_METRICS[0];
-  const fmt = (v, dp) => (v === null || v === undefined || Number.isNaN(v)) ? "·" : v.toFixed(dp);
-  const freqs = [...new Set(caps.flatMap(c => c.run.rows.map(x => x.f)).filter(v => v !== null))].sort((a, b) => a - b);
-  const valAt = (run, f) => { const row = run && run.rows.find(x => x.f === f); return row ? row[M.k] : null; };
-  const sepOf = (grip, f) => {
-    const gv = valAt(sweepRunByCG("ground", grip), f), av = valAt(sweepRunByCG("air", grip), f);
-    return (gv == null || av == null) ? null : av - gv;
-  };
-  const haveFirm  = sweepRunByCG("ground", "firm")  && sweepRunByCG("air", "firm");
-  const haveLoose = sweepRunByCG("ground", "loose") && sweepRunByCG("air", "loose");
+  const M = sweepMetricDef();
+  const freqs = sweepSortedFreqs(caps.flatMap(c => c.run.rows));
+  const capIndex = caps.map(c => sweepRowIndex(c.run));
+  const pairs = sweepGripPairs();
 
-  let head = "<tr><th>f (Hz)</th>" + caps.map(c => `<th>${M.lbl} ${c.slot.key}</th>`).join("");
-  if (haveFirm)  head += "<th>Δfirm</th>";
-  if (haveLoose) head += "<th>Δloose</th>";
-  head += "</tr>";
+  const head = "<tr><th>f (Hz)</th>" + caps.map(c => `<th>${M.lbl} ${c.slot.key}</th>`).join("")
+             + pairs.map(p => `<th>Δ${p.grip}</th>`).join("") + "</tr>";
   let rows = "";
   for (const f of freqs) {
-    rows += `<tr><td>${f}</td>` + caps.map(c => `<td>${fmt(valAt(c.run, f), M.dp)}</td>`).join("");
-    for (const [have, grip] of [[haveFirm, "firm"], [haveLoose, "loose"]]) {
-      if (!have) continue;
-      const d = sepOf(grip, f);
-      rows += `<td class="sweep-delta">${d == null ? "·" : (d >= 0 ? "+" : "") + d.toFixed(M.dp)}</td>`;
+    rows += `<tr><td>${f}</td>` + capIndex.map(ix => `<td>${sweepCellText(sweepMetricAt(ix, f, M.k), M.dp)}</td>`).join("");
+    for (const p of pairs) {
+      const d = sweepSepAt(p, f, M.k);
+      rows += `<td class="sweep-delta">${d == null ? "·" : signedFixed(d, M.dp)}</td>`;
     }
     rows += "</tr>";
   }
-  let cap = `${caps.length}/4 captured (${caps.map(c => c.slot.key).join(",")})`;
-  if (sweepResult) {
-    if (sweepResult.rejected) {
-      cap += ` · rejected (wa ratio ${fmt(sweepResult.wa_ratio, 2)}`
-           + (sweepResult.wa_min != null ? ` < ${fmt(sweepResult.wa_min, 2)}` : "")
-           + ` — same condition twice?)`;
-    } else if (sweepResult.f != null) {
-      cap += ` · ${sweepResult.saved ? "saved" : "applied"} @ ${sweepResult.f}Hz `
-           + `wa_thr=${fmt(sweepResult.wa_thr, 3)} ratio=${fmt(sweepResult.ratio, 1)}×`
-           + ` (dφ_thr=${fmt(sweepResult.dphi_thr, 0)})`;
-    }
-  }
+  const cap = `${caps.length}/4 captured (${caps.map(c => c.slot.key).join(",")})` + sweepResultNote();
   tbl.innerHTML = `<caption>${M.lbl} per condition · ${cap}</caption><thead>${head}</thead><tbody>${rows}</tbody>`;
   tbl.hidden = false;
+}
+// Caption suffix for the latest pairing result ("" when there is none to show).
+function sweepResultNote() {
+  const r = sweepResult;
+  if (!r) return "";
+  if (r.rejected) {
+    return ` · rejected (wa ratio ${sweepCellText(r.wa_ratio, 2)}`
+         + (r.wa_min != null ? ` < ${sweepCellText(r.wa_min, 2)}` : "")
+         + ` — same condition twice?)`;
+  }
+  if (r.f != null) {
+    return ` · ${r.saved ? "saved" : "applied"} @ ${r.f}Hz `
+         + `wa_thr=${sweepCellText(r.wa_thr, 3)} ratio=${sweepCellText(r.ratio, 1)}×`
+         + ` (dφ_thr=${sweepCellText(r.dphi_thr, 0)})`;
+  }
+  return "";
 }
 
 // ─── Probe-sweep charts ──────────────────────────────────────────────────────
@@ -2106,13 +2177,17 @@ function renderSweepTable() {
 // vs loose) — so you can see whether a looser grip erodes the detection margin.
 // Both are pure-canvas, hi-dpi, and match the panel's drawing language.
 function sweepCanvas(canvas) {
-  const dpr = devicePixelRatio || 1;
-  const w = canvas.width  = canvas.clientWidth  * dpr;
-  const h = canvas.height = canvas.clientHeight * dpr;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#080d0f"; ctx.fillRect(0, 0, w, h);
-  ctx.font = `${10 * dpr}px 'IBM Plex Mono', monospace`;
-  return { ctx, w, h, dpr };
+  const c = fitCanvas(canvas);
+  c.ctx.fillStyle = "#080d0f"; c.ctx.fillRect(0, 0, c.w, c.h);
+  c.ctx.font = `${10 * c.dpr}px 'IBM Plex Mono', monospace`;
+  return c;
+}
+// Set a chart's caption and clear its hi-dpi canvas; null if the canvas is absent.
+function sweepChartBegin(canvasId, capId, capText) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return null;
+  setText(capId, capText);
+  return sweepCanvas(canvas);
 }
 function sweepEmpty(ctx, w, h, dpr, msg) {
   ctx.fillStyle = "#7f908d";
@@ -2120,13 +2195,68 @@ function sweepEmpty(ctx, w, h, dpr, msg) {
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(msg, w / 2, h / 2);
 }
+// Dashed horizontal gridlines + right-aligned labels at each value in vs;
+// emphasizeZero draws the v = 0 line solid and heavier.
+function sweepYGrid(ctx, dpr, pad, w, Y, vs, label, emphasizeZero) {
+  ctx.fillStyle = "#7f908d";
+  for (const v of vs) {
+    const y = Y(v), zero = emphasizeZero && v === 0;
+    ctx.strokeStyle = zero ? "#33474d" : "#223137";
+    ctx.lineWidth = zero ? 1.5 * dpr : 1; ctx.setLineDash(zero ? [] : [2, 4]);
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(label(v), pad.l - 5 * dpr, y);
+  }
+}
+// Value range of vals widened 14% each side (±1 around a flat line).
+function sweepPaddedRange(vals) {
+  let vmin = Math.min(...vals), vmax = Math.max(...vals);
+  if (vmin === vmax) { vmin -= 1; vmax += 1; }
+  const vp = (vmax - vmin) * 0.14;
+  return [vmin - vp, vmax + vp];
+}
+// Legend chips for the overlay: firm = solid swatch, loose = dashed, + probe tone.
+function sweepOverlayLegendHtml(caps) {
+  let html = caps.map(c => {
+    const sw = (c.slot.dash && c.slot.dash.length)
+      ? `background:repeating-linear-gradient(90deg, ${c.slot.color} 0 3px, transparent 3px 6px)`
+      : `background:${c.slot.color}`;
+    return `<span><i style="${sw}"></i>${c.slot.label}</span>`;
+  }).join("");
+  const probeF = sweepAppliedProbe();
+  if (probeF != null)
+    html += `<span><i style="background:#e2ece9;height:9px;width:2px"></i>probe ${probeF}Hz</span>`;
+  return html;
+}
+// Plot points of metric k for one run at the shared frequencies (gaps skipped).
+function sweepTracePoints(run, freqs, k, X, Y) {
+  const index = sweepRowIndex(run);
+  return freqs.map(f => {
+    const v = sweepMetricAt(index, f, k);
+    return isMissing(v) ? null : { x: X(f), y: Y(v) };
+  }).filter(Boolean);
+}
+function sweepTrace(ctx, dpr, slot, pts) {
+  if (!pts.length) return;
+  ctx.strokeStyle = slot.color; ctx.lineWidth = 2 * dpr;
+  ctx.setLineDash((slot.dash || []).map(d => d * dpr));   // firm solid, loose dashed
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = slot.color;
+  for (const p of pts) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.6 * dpr, 0, 2 * Math.PI); ctx.fill(); }
+}
+// Dashed vertical marker + label at the applied probe tone (x = X(f)).
+function sweepProbeMarker(ctx, dpr, pad, w, h, x, f) {
+  sweepVRule(ctx, x, pad, h, "#e2ece9", 1.5 * dpr, [4, 3]);
+  ctx.fillStyle = "#e2ece9"; ctx.textBaseline = "bottom"; ctx.textAlign = "center";
+  ctx.fillText(`probe ${f}Hz`, Math.min(Math.max(x, pad.l + 26 * dpr), w - pad.r - 26 * dpr), h - pad.b - 1 * dpr);
+}
 function drawSweepOverlay() {
-  const canvas = document.getElementById("sweepOverlayCanvas");
-  if (!canvas) return;
-  const M = SWEEP_METRICS.find(m => m.k === sweepMetric) || SWEEP_METRICS[0];
-  const capEl = document.getElementById("sweepOverlayCap");
-  if (capEl) capEl.textContent = `metric ${M.lbl} — air vs ground × grip`;
-  const { ctx, w, h, dpr } = sweepCanvas(canvas);
+  const M = sweepMetricDef();
+  const cv = sweepChartBegin("sweepOverlayCanvas", "sweepOverlayCap", `metric ${M.lbl} — air vs ground × grip`);
+  if (!cv) return;
+  const { ctx, w, h, dpr } = cv;
   const caps = sweepCaptured();
   const legend = document.getElementById("sweepOverlayLegend");
   if (!caps.length) {
@@ -2134,89 +2264,51 @@ function drawSweepOverlay() {
     if (legend) legend.innerHTML = "";
     return;
   }
-  if (legend) {
-    let html = caps.map(c => {
-      const sw = (c.slot.dash && c.slot.dash.length)
-        ? `background:repeating-linear-gradient(90deg, ${c.slot.color} 0 3px, transparent 3px 6px)`
-        : `background:${c.slot.color}`;
-      return `<span><i style="${sw}"></i>${c.slot.label}</span>`;
-    }).join("");
-    if (sweepResult && sweepResult.f != null && !sweepResult.rejected)
-      html += `<span><i style="background:#e2ece9;height:9px;width:2px"></i>probe ${sweepResult.f}Hz</span>`;
-    legend.innerHTML = html;
-  }
+  if (legend) legend.innerHTML = sweepOverlayLegendHtml(caps);
   const ext = sweepFreqExtent();
   if (!ext) { sweepEmpty(ctx, w, h, dpr, `no ${M.lbl} data`); return; }
   const [fmin, fmax] = ext;
-  const vals = caps.flatMap(c => c.run.rows.map(x => x[M.k])).filter(v => v != null && !Number.isNaN(v));
+  const vals = caps.flatMap(c => c.run.rows.map(x => x[M.k])).filter(v => !isMissing(v));
   if (!vals.length) { sweepEmpty(ctx, w, h, dpr, `no ${M.lbl} data`); return; }
-  let vmin = Math.min(...vals), vmax = Math.max(...vals);
-  if (vmin === vmax) { vmin -= 1; vmax += 1; }
-  const vp = (vmax - vmin) * 0.14; vmin -= vp; vmax += vp;
+  const [vmin, vmax] = sweepPaddedRange(vals);
 
   const pad = { l: 40 * dpr, r: 10 * dpr, t: 14 * dpr, b: 22 * dpr };
   const ph = h - pad.t - pad.b;
   const Y = v => pad.t + (1 - (v - vmin) / (vmax - vmin)) * ph;
-  const freqs = [...new Set(caps.flatMap(c => c.run.rows.map(x => x.f)).filter(v => v != null))].sort((a, b) => a - b);
+  const freqs = sweepSortedFreqs(caps.flatMap(c => c.run.rows));
 
   // Y grid + labels first, then the shared log x-axis (gridlines + Hz labels).
-  ctx.fillStyle = "#7f908d";
-  for (let i = 0; i <= 4; i++) {
-    const v = vmin + (i / 4) * (vmax - vmin), y = Y(v);
-    ctx.strokeStyle = "#223137"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
-    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.textAlign = "right"; ctx.textBaseline = "middle";
-    ctx.fillText(v.toFixed(M.dp), pad.l - 5 * dpr, y);
-  }
+  const yTicks = [0, 1, 2, 3, 4].map(i => vmin + (i / 4) * (vmax - vmin));
+  sweepYGrid(ctx, dpr, pad, w, Y, yTicks, v => v.toFixed(M.dp), false);
   const X = sweepLogAxis(ctx, dpr, pad, w, h, fmin, fmax);
 
-  for (const c of caps) {
-    const pts = freqs.map(f => {
-      const row = c.run.rows.find(x => x.f === f);
-      return (row && row[M.k] != null && !Number.isNaN(row[M.k])) ? { x: X(f), y: Y(row[M.k]) } : null;
+  for (const c of caps) sweepTrace(ctx, dpr, c.slot, sweepTracePoints(c.run, freqs, M.k, X, Y));
+  const probeF = sweepAppliedProbe();
+  if (probeF != null && probeF >= fmin && probeF <= fmax) sweepProbeMarker(ctx, dpr, pad, w, h, X(probeF), probeF);
+}
+const SWEEP_GRIP_STYLE = {
+  firm:  { lbl: "firm grip",  color: "#46d6c4" },
+  loose: { lbl: "loose grip", color: "#f1c34c" },
+};
+// Per-grip air − ground series of metric k (grips with both conditions captured).
+function sweepDeltaSeries(k) {
+  return sweepGripPairs().map(p => {
+    const data = p.freqs.map(f => {
+      const v = sweepSepAt(p, f, k);
+      return v == null ? null : { f, v };
     }).filter(Boolean);
-    if (!pts.length) continue;
-    ctx.strokeStyle = c.slot.color; ctx.lineWidth = 2 * dpr;
-    ctx.setLineDash((c.slot.dash || []).map(d => d * dpr));   // firm solid, loose dashed
-    ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = c.slot.color;
-    for (const p of pts) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.6 * dpr, 0, 2 * Math.PI); ctx.fill(); }
-  }
-  if (sweepResult && sweepResult.f != null && !sweepResult.rejected &&
-      sweepResult.f >= fmin && sweepResult.f <= fmax) {
-    const x = X(sweepResult.f);
-    ctx.strokeStyle = "#e2ece9"; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([4, 3]);
-    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "#e2ece9"; ctx.textBaseline = "bottom"; ctx.textAlign = "center";
-    ctx.fillText(`probe ${sweepResult.f}Hz`, Math.min(Math.max(x, pad.l + 26 * dpr), w - pad.r - 26 * dpr), h - pad.b - 1 * dpr);
-  }
+    // byF: f → point (frequencies are distinct per series) for the bar loop.
+    return data.length ? { grip: p.grip, ...SWEEP_GRIP_STYLE[p.grip], data,
+                           byF: new Map(data.map(d => [d.f, d])) } : null;
+  }).filter(Boolean);
 }
 function drawSweepDelta() {
-  const canvas = document.getElementById("sweepDeltaCanvas");
-  if (!canvas) return;
-  const M = SWEEP_METRICS.find(m => m.k === sweepMetric) || SWEEP_METRICS[0];
-  const capEl = document.getElementById("sweepDeltaCap");
-  if (capEl) capEl.textContent = `${M.lbl} separation (air − ground) by grip`;
-  const { ctx, w, h, dpr } = sweepCanvas(canvas);
+  const M = sweepMetricDef();
+  const cv = sweepChartBegin("sweepDeltaCanvas", "sweepDeltaCap", `${M.lbl} separation (air − ground) by grip`);
+  if (!cv) return;
+  const { ctx, w, h, dpr } = cv;
   const legend = document.getElementById("sweepDeltaLegend");
-  const valAt = (run, f) => { const row = run && run.rows.find(x => x.f === f); return row ? row[M.k] : null; };
-  const grips = [
-    { grip: "firm",  lbl: "firm grip",  color: "#46d6c4" },
-    { grip: "loose", lbl: "loose grip", color: "#f1c34c" },
-  ];
-  const series = grips.map(g => {
-    const ground = sweepRunByCG("ground", g.grip), air = sweepRunByCG("air", g.grip);
-    if (!ground || !air) return null;
-    const fs = [...new Set([...ground.rows, ...air.rows].map(x => x.f).filter(v => v !== null))].sort((a, b) => a - b);
-    const data = fs.map(f => {
-      const gv = valAt(ground, f), av = valAt(air, f);
-      return (gv == null || av == null) ? null : { f, v: av - gv };
-    }).filter(Boolean);
-    return data.length ? { ...g, data } : null;
-  }).filter(Boolean);
+  const series = sweepDeltaSeries(M.k);
 
   if (!series.length) {
     sweepEmpty(ctx, w, h, dpr, "capture an air+ground pair (A+B or C+D)");
@@ -2225,7 +2317,7 @@ function drawSweepDelta() {
   }
   if (legend) legend.innerHTML = series.map(s => `<span><i style="background:${s.color}"></i>${s.lbl}</span>`).join("");
 
-  const freqs = [...new Set(series.flatMap(s => s.data.map(d => d.f)))].sort((a, b) => a - b);
+  const freqs = sweepSortedFreqs(series.flatMap(s => s.data));
   const flat = series.flatMap(s => s.data.map(d => d.v));
   const amax = Math.max(1e-6, ...flat.map(Math.abs)) * 1.18;
   // x domain = full captured extent (matches the overlay's axis exactly)
@@ -2238,16 +2330,7 @@ function drawSweepDelta() {
   const y0 = Y(0);
 
   // Y grid + labels, then the shared log x-axis (same ticks/range as overlay)
-  ctx.fillStyle = "#7f908d";
-  for (const v of [amax, amax / 2, 0, -amax / 2, -amax]) {
-    const y = Y(v);
-    ctx.strokeStyle = v === 0 ? "#33474d" : "#223137";
-    ctx.lineWidth = v === 0 ? 1.5 * dpr : 1; ctx.setLineDash(v === 0 ? [] : [2, 4]);
-    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.textAlign = "right"; ctx.textBaseline = "middle";
-    ctx.fillText((v >= 0 ? "+" : "") + v.toFixed(M.dp), pad.l - 5 * dpr, y);
-  }
+  sweepYGrid(ctx, dpr, pad, w, Y, [amax, amax / 2, 0, -amax / 2, -amax], v => signedFixed(v, M.dp), true);
   const X = sweepLogAxis(ctx, dpr, pad, w, h, fmin, fmax);
 
   // Bar cluster width from the tightest adjacent log-spacing so bars never overlap.
@@ -2261,7 +2344,7 @@ function drawSweepDelta() {
   for (const f of freqs) {
     const cx = X(f), span = barW * nS;
     series.forEach((s, si) => {
-      const d = s.data.find(x => x.f === f);
+      const d = s.byF.get(f);
       if (!d) return;
       const bx = cx - span / 2 + barW * si;
       const by = Y(Math.max(Math.min(d.v, amax), -amax));
@@ -2353,8 +2436,7 @@ class BleTransport {
     // as duplicate [DISCONNECT] log lines from old transports.
     this._disconnectListener = (ev) => {
       const name = (this.device && this.device.name) || "(unnamed)";
-      const dt   = Math.round((performance.now() - this._connectedAt) / 100) / 10;
-      onDisconnect(`BLE gattserverdisconnected — device="${name}" up=${dt}s`);
+      onDisconnect(`BLE gattserverdisconnected — device="${name}" up=${upSecs(this._connectedAt)}s`);
       // Spontaneous drops (chip rebooted, range, etc.) → retry until
       // success. User-initiated disconnect skips this.
       if (!this._userDisconnected) this._startReconnectLoop();
@@ -2366,14 +2448,17 @@ class BleTransport {
       // Tear down so a cancelled/late connect can't fire _disconnectListener
       // and spawn a reconnect loop on this dead transport.
       this._userDisconnected = true;
-      if (this._disconnectListener) {
-        this.device.removeEventListener("gattserverdisconnected", this._disconnectListener);
-        this._disconnectListener = null;
-      }
+      this._detachDisconnectListener();
       try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch (_) {}
       throw e;
     }
     return this.device.name || "BLE";
+  }
+  _detachDisconnectListener() {
+    if (this._disconnectListener && this.device) {
+      this.device.removeEventListener("gattserverdisconnected", this._disconnectListener);
+      this._disconnectListener = null;
+    }
   }
   async _gattConnect(timeoutMs = 0) {
     this._connectedAt = performance.now();
@@ -2389,202 +2474,52 @@ class BleTransport {
     try {
       this.angle = await svc.getCharacteristic(ANGLE_UUID);
       await this.angle.startNotifications();
-      this.angle.addEventListener("characteristicvaluechanged", (ev) => {
-        // 4 / 12 / 24 bytes (older → newer firmware):
-        //   [0..3]   world-frame shaft position (rad) = shaft_angle + g_tilt + offset.
-        //            NEVER the raw body-frame encoder angle — the firmware only
-        //            ever transmits the world-frame, tilt-compensated value.
-        //   [4..7]   VBUS (V)
-        //   [8..11]  torque cmd (V)
-        //   [12..15] tilt (rad)
-        //   [16..19] tilt_dot (rad/s)
-        //   [20..23] mode (0=haptic, 1=balance) as float
-        const dv = ev.target.value;
-        const angle = dv.getFloat32(0, true);   // [0] balance-compensated (cart/balance visual)
-        balanceLive.shaftAngle = angle;
-        // [13] @52 = RAW shaft_angle (clean knob spin that drives the HID scroll)
-        // → the scroll-practice ring. [0] is offset by tilt/balance so it isn't
-        // the true spin; fall back to it on older 52-byte packets.
-        onLiveAngle(dv.byteLength >= 56 ? dv.getFloat32(52, true) : angle);
-        if (dv.byteLength >= 12) {
-          const vbus   = dv.getFloat32(4, true);
-          const torque = dv.getFloat32(8, true);
-          onTelem(torque);
-          const vEl = document.getElementById("liveVoltage");
-          if (vEl) vEl.textContent = `V = ${vbus.toFixed(2)}`;
-        }
-        if (dv.byteLength >= 24) {
-          const tilt = dv.getFloat32(12, true);
-          const tiltDot = dv.getFloat32(16, true);   // [4] tilt_dot (rad/s)
-          const mode = Math.round(dv.getFloat32(20, true));
-          const tEl = document.getElementById("liveTilt");
-          if (tEl) tEl.textContent = `tilt = ${(tilt * 180 / Math.PI).toFixed(1)}°`;
-          onTiltRate(tiltDot);
-          updateModePill(mode);
-          balanceLive.tilt = tilt;
-          balanceLive.mode = mode;
-        }
-        if (dv.byteLength >= 28) {
-          balanceLive.posErrSat = dv.getFloat32(24, true);
-        }
-        if (dv.byteLength >= 32) {
-          onTiltBias(dv.getFloat32(28, true));
-        }
-        // 48-byte packet (this board rev — QVAR slot removed because
-        // AH2 is grounded). tap/dtap/ff/wake counters at offsets 32..44.
-        // Edge-detect against the previous sample so each increment
-        // emits a console event line.
-        if (dv.byteLength >= 48) {
-          const tap  = dv.getFloat32(32, true);
-          const dtap = dv.getFloat32(36, true);
-          const ff   = dv.getFloat32(40, true);
-          const wake = dv.getFloat32(44, true);
-          const tEl = document.getElementById("liveTap");
-          if (tEl) tEl.textContent = `taps ${tap|0}/${dtap|0}`;
-          const fEl = document.getElementById("liveFFWake");
-          if (fEl) fEl.textContent = `ff/wk ${ff|0}/${wake|0}`;
-          if (this._prevTap  !== undefined && tap  > this._prevTap)  log("← TAP");
-          if (this._prevDtap !== undefined && dtap > this._prevDtap) log("← DOUBLE-TAP");
-          if (this._prevFf   !== undefined && ff   > this._prevFf)   log("← FREE-FALL");
-          if (this._prevWake !== undefined && wake > this._prevWake) log("← WAKE");
-          this._prevTap = tap; this._prevDtap = dtap;
-          this._prevFf  = ff;  this._prevWake = wake;
-        }
-        // 52-byte packet: pkt[12] @48 = battery SOC%. <0 → unknown/USB.
-        if (dv.byteLength >= 52) {
-          onBatterySoc(dv.getFloat32(48, true));
-        }
-        // 64-byte packet: u32 seq @56 (one per notify — drop detection) +
-        // u32 t_ms @60 (fw millis at send — pacing/latency split). Older
-        // 56-byte firmware → nulls; arrival time is still measured.
-        onPktMeta(dv.byteLength >= 64 ? dv.getUint32(56, true) : null,
-                  dv.byteLength >= 64 ? dv.getUint32(60, true) : null);
-        // 80-byte packet (fw ≥1834, plant=1 only): acro state at the full
-        // ~60 Hz stream rate — f32 qimu(deg)@64, wimu(deg/s)@68, sh(deg)@72,
-        // wsh(deg/s)@76. Same values/units as the [ACRO] line, which remains
-        // authoritative for hang=/st= — this drives only the motion (figure,
-        // pills, plots), still rendered raw per the operator decision.
-        if (dv.byteLength >= 80) {
-          acroApplyMotion(dv.getFloat32(64, true), dv.getFloat32(68, true),
-                          dv.getFloat32(72, true), dv.getFloat32(76, true));
-          // SysID recorder — captures this same sample on the fw t_ms timebase;
-          // reads the applied elbow torque @80 when the (proposed) 84-byte
-          // packet arrives. No-op unless a recording is running.
-          sidOnPacket(dv);
-        }
-        startTwinAnim();   // 60 fps loop eases the twin toward this sample
-      });
+      this.angle.addEventListener("characteristicvaluechanged", (ev) => this._onTelemetryPacket(ev.target.value));
     } catch (e) { this.angle = null; }
     try {
       this.event = await svc.getCharacteristic(EVENT_UUID);
       await this.event.startNotifications();
-      this.event.addEventListener("characteristicvaluechanged", (ev) => {
-        const text = new TextDecoder().decode(ev.target.value);
-        // [HB] — 2 Hz idle keepalive. Pure no-op: reset the link-alive watchdog
-        // and don't echo to the console (it would spam during quiet periods).
-        if (text && text.startsWith("[HB]")) { petTelemetry(); return; }
-        // [HLT] — 3 s pipeline-health line (name=value pairs, parsed
-        // generically so appended tokens are tolerated). Feeds the health
-        // strip; suppressed from the console except regressions.
-        if (text && text.startsWith("[HLT]")) { onHlt(text); return; }
-        // Lift-detector coherence rides along on [SYS] (~3 s) and [ATT] (blocked
-        // entry) lines — pull it into the confidence chip wherever it appears.
-        const cohM = text && text.match(/\bcoh=([\d.]+)/);
-        if (cohM) setCoh(parseFloat(cohM[1]));
-        // wa=<g/V>(><thr>) on [SYS]/[ATT]: comparator '>' = above gate = on ground.
-        const waM = text && text.match(/\bwa=([\d.]+)\s*\(\s*([<>])\s*([\d.]+)\s*\??\)/);
-        if (waM) setContact(parseFloat(waM[1]), waM[2] === ">");
-        // [SYS] <mode> <loop>/<main> soc=… armed=… dphi=… coh=… ld=…  (~every 3 s).
-        // Pull the loop/main rate into the speedometer silently (would otherwise
-        // spam the console). e.g. "[SYS] BAL 9.0k/.. soc=64% …" → "9.0k Hz".
-        if (text && text.startsWith("[SYS]")) {
-          const el = document.getElementById("liveLoopHz");
-          const m  = text.match(/(\d[\d.]*k?)\/(\S+)/);
-          if (el && m) el.textContent = (m[2] && m[2] !== "..") ? `${m[1]}/${m[2]} Hz` : `${m[1]} Hz`;
-          // Mode word (first token: BAL/HAP/FF/LOCK/DAMP/ACRO) drives the
-          // M-button state and the acrobot plant indicator — authoritative, so a
-          // plant switch from elsewhere (or a saved plant=1 at boot) reflects here.
-          const sm = text.match(/^\[SYS\]\s+(\w+)/);
-          if (sm) {
-            setDampedState(sm[1] === "DAMP");
-            setAcroActive(sm[1] === "ACRO");
-          }
-          return;
-        }
-        // [MODE] transitions — authoritative for the Lie-down/Stand-up button.
-        // "[MODE] DAMPED (hold) …" → held; "balance armed"/"STAND-UP kick" → released.
-        if (text && /^\[MODE\]/i.test(text)) {
-          setDampedState(/\bDAMPED\b/i.test(text));
-          // fall through so the transition still echoes to the console
-        }
-        // [GRAV] swing AXIS=… confirms the GA swing-axis cal → flip the Axis pill.
-        // (Rejection lines "GA needs GH" / "GA rejected…" fall through to echo.)
-        if (text && /^\[GRAV\]/i.test(text) && /swing\s+AXIS=/i.test(text)) {
-          setAcroAxis(true);
-        }
-        // [SID] — sysid-excitation lifecycle (proposed contract, forFWfromUI.md
-        // 2026-07-21): begin/done/abort. done/abort finalize the recorder; every
-        // line falls through to the normal console echo.
-        if (text && /^\[SID\]/i.test(text)) {
-          onSidLine(text);
-        }
-        // [ACRO] hang=<0|1> st=<off|swing|bal> qimu=<deg> wimu=<deg/s> sh=<deg> wsh=<deg/s>
-        // — ~4 Hz acrobot readout (plant=1), AUTHORITATIVE for hang=/st= (the
-        // binary packet carries no flags). Wire primitives: qimu = the IMU's
-        // world-frame angle — link 1 on this rig (fw confirmed 2026-07-17 (d)
-        // and renamed the tokens from the ambiguous q2=/w2=; old spellings
-        // kept as a fallback for pre-1834 firmware) — and the shaft encoder
-        // sh. Link 2 is DERIVED = qimu ± sh (sign from the acro-card flip
-        // toggle). While fw ≥1834 streams the 80-byte packet, motion comes at
-        // ~60 Hz from there and this line mostly matters for the flags.
-        // \b on the key so num("sh") can't match inside "wsh=". Echo suppressed.
-        if (text && /^\[ACRO\]/i.test(text)) {
-          const num = k => { const m = text.match(new RegExp("\\b" + k + "=(-?[\\d.]+)")); return m ? parseFloat(m[1]) : null; };
-          const stM = text.match(/\bst=(\w+)/);
-          onAcro((num("hang") ?? 0) | 0,
-                 num("qimu") ?? num("q2") ?? 0, num("wimu") ?? num("w2") ?? 0,
-                 num("sh") ?? 0, num("wsh") ?? 0, stM ? stM[1] : null,
-                 num("qacc"));   // accel-only diagnostic angle (fw (e)+; null if absent)
-          return;
-        }
-        // [SWP] … probe-sweep lines (begin / data row / captured / paired / saved).
-        // Capture into the run-vs-run table + charts so the ground/air gap is
-        // visible, and still echo to the console so the raw lines aren't lost.
-        if (text && /^\[SWP\]/i.test(text)) {
-          captureSweepLine(text);
-        }
-        // NVS dump line — seed the detector-param controls (probe freq, Wa
-        // threshold, observer bandwidth) from the knob's stored values.
-        if (text && /^NVS\b/i.test(text)) {
-          applyNvsLine(text);
-        }
-        // [TUN] — self-describing live-tunable registry (full dump from Z, or a
-        // single "name=value set" echo). Builds/updates the Tuning panel.
-        if (text && /^\[TUN\]/i.test(text)) {
-          applyTunLine(text);
-        }
-        // [CAL] events: STALE / "probe freq=… set — re-run W" nudge the operator
-        // to re-run the sweep; probe-freq / wa_thr echoes sync the param controls.
-        if (text && /^\[CAL\]/i.test(text)) {
-          if (/\bSTALE\b|re-run\s+W/i.test(text)) showSweepStale(text);
-          const pf = text.match(/probe freq=([\d.]+)/i) || text.match(/probe is\s*([\d.]+)\s*Hz/i);
-          if (pf) syncProbeF(parseFloat(pf[1]));
-          const wt = text.match(/\bwa_thr=([\d.]+)\s*set/i);
-          if (wt) syncWaThr(parseFloat(wt[1]));
-        }
-        // [WIFI] ssid/pass set | creds cleared — keep the STA flag in sync with
-        // the knob's confirmation (e.g. creds cleared from elsewhere).
-        if (text && /^\[WIFI\]/i.test(text)) {
-          if (/cleared/i.test(text)) { wifiStaConfigured = false; refreshWifiHint(); }
-          else if (/ssid\s+set/i.test(text)) { wifiStaConfigured = true; refreshWifiHint(); }
-        }
-        log("← " + (text || "(empty event)"));
-      });
+      this.event.addEventListener("characteristicvaluechanged",
+        (ev) => onEventText(new TextDecoder().decode(ev.target.value)));
       log("Subscribed to FOC event channel.", "ok");
     } catch (e) {
       this.event = null;
       log("FOC event channel unavailable: " + errMsg(e), "bad");
     }
+  }
+  // Telemetry notify: each field group is handled once the packet is long
+  // enough to carry it (older firmware sends shorter packets).
+  _onTelemetryPacket(dv) {
+    applyBalanceTelemetry(dv);                               // [0..31], 4..32 bytes
+    if (dv.byteLength >= 48) this._onImuEventCounters(dv);
+    // 52-byte packet: pkt[12] @48 = battery SOC%. <0 → unknown/USB.
+    if (dv.byteLength >= 52) onBatterySoc(f32le(dv, 48));
+    // 64-byte packet: u32 seq @56 (one per notify — drop detection) +
+    // u32 t_ms @60 (fw millis at send — pacing/latency split). Older
+    // 56-byte firmware → nulls; arrival time is still measured.
+    const hasSeq = dv.byteLength >= 64;
+    onPktMeta(hasSeq ? dv.getUint32(56, true) : null,
+              hasSeq ? dv.getUint32(60, true) : null);
+    if (dv.byteLength >= 80) applyAcroTelemetry(dv);
+    startTwinAnim();   // 60 fps loop eases the twin toward this sample
+  }
+  // 48-byte packet (this board rev — QVAR slot removed because
+  // AH2 is grounded). tap/dtap/ff/wake counters at offsets 32..44.
+  // Edge-detect against the previous sample so each increment
+  // emits a console event line.
+  _onImuEventCounters(dv) {
+    const tap  = f32le(dv, 32);
+    const dtap = f32le(dv, 36);
+    const ff   = f32le(dv, 40);
+    const wake = f32le(dv, 44);
+    setText("liveTap", `taps ${tap|0}/${dtap|0}`);
+    setText("liveFFWake", `ff/wk ${ff|0}/${wake|0}`);
+    if (this._prevTap  !== undefined && tap  > this._prevTap)  log("← TAP");
+    if (this._prevDtap !== undefined && dtap > this._prevDtap) log("← DOUBLE-TAP");
+    if (this._prevFf   !== undefined && ff   > this._prevFf)   log("← FREE-FALL");
+    if (this._prevWake !== undefined && wake > this._prevWake) log("← WAKE");
+    this._prevTap = tap; this._prevDtap = dtap;
+    this._prevFf  = ff;  this._prevWake = wake;
   }
   // Retry GATT-connect + service discovery on a backoff until the chip
   // accepts the connection again or the user cancels via Disconnect.
@@ -2616,12 +2551,21 @@ class BleTransport {
       } catch (e) {
         // 500 ms for the first 6 attempts (chip is usually mid-reboot
         // ~1–3 s after a drop), then 3 s thereafter.
-        const delay = (attempt < 6) ? 500 : 3000;
-        await new Promise(r => setTimeout(r, delay));
+        await sleep((attempt < 6) ? 500 : 3000);
       }
     }
     this._reconnecting = false;
     setReconnectStatus(false);
+  }
+  // Link-state queries for the UI (the flags stay private to the transport).
+  willAutoReconnect() { return !this._userDisconnected; }
+  isReconnecting()    { return !!this._reconnecting; }
+  // GATT still claims "connected" but the stream is dead: drop it so the
+  // gattserverdisconnected path takes over (and starts the reconnect loop).
+  dropStaleLink() {
+    if (this.device && this.device.gatt && this.device.gatt.connected) {
+      try { this.device.gatt.disconnect(); } catch (e) { /* listener handles it */ }
+    }
   }
   async writeCmd(line) {
     if (!this.cmd) throw new Error("not connected");
@@ -2634,17 +2578,17 @@ class BleTransport {
     if (!this.cmd) throw new Error("not connected");
     await this.cmd.writeValueWithResponse(enc.encode(line));
   }
-  async readParams() {
-    if (!this.params) return null;
-    const dv = await this.params.readValue();
+  // GATT read of a text characteristic; null when the firmware lacks it.
+  async _readText(ch) {
+    if (!ch) return null;
+    const dv = await ch.readValue();
     return new TextDecoder().decode(dv);
   }
+  async readParams() { return this._readText(this.params); }
   async readPresets() {
     // GATT read auto-handles long values (>MTU) so the whole preset
     // blob arrives in one shot, unlike the MTU-bounded event notify.
-    if (!this.presets) return null;
-    const dv = await this.presets.readValue();
-    return new TextDecoder().decode(dv);
+    return this._readText(this.presets);
   }
   async disconnect() {
     this._userDisconnected = true;
@@ -2652,13 +2596,177 @@ class BleTransport {
     // Drop the listener so a future reconnect from a new transport
     // doesn't fire our handler too (the BluetoothDevice survives
     // gatt.disconnect — the browser singleton stays in scope).
-    if (this._disconnectListener && this.device) {
-      this.device.removeEventListener("gattserverdisconnected", this._disconnectListener);
-      this._disconnectListener = null;
-    }
+    this._detachDisconnectListener();
     if (this.device && this.device.gatt.connected) this.device.gatt.disconnect();
   }
   isConnected() { return !!(this.device && this.device.gatt.connected); }
+}
+
+// Little-endian f32 at a byte offset of a telemetry packet.
+const f32le = (dv, offset) => dv.getFloat32(offset, true);
+// Telemetry [0..31]. 4 / 12 / 24 bytes (older → newer firmware):
+//   [0..3]   world-frame shaft position (rad) = shaft_angle + g_tilt + offset.
+//            NEVER the raw body-frame encoder angle — the firmware only
+//            ever transmits the world-frame, tilt-compensated value.
+//   [4..7]   VBUS (V)
+//   [8..11]  torque cmd (V)
+//   [12..15] tilt (rad)
+//   [16..19] tilt_dot (rad/s)
+//   [20..23] mode (0=haptic, 1=balance) as float
+// then posErrSat @24 and the tilt bias @28.
+function applyBalanceTelemetry(dv) {
+  const angle = f32le(dv, 0);   // [0] balance-compensated (cart/balance visual)
+  balanceLive.shaftAngle = angle;
+  // [13] @52 = RAW shaft_angle (clean knob spin that drives the HID scroll)
+  // → the scroll-practice ring. [0] is offset by tilt/balance so it isn't
+  // the true spin; fall back to it on older 52-byte packets.
+  onLiveAngle(dv.byteLength >= 56 ? f32le(dv, 52) : angle);
+  if (dv.byteLength >= 12) {
+    const vbus = f32le(dv, 4);
+    onTelem(f32le(dv, 8));   // torque cmd
+    setText("liveVoltage", `V = ${vbus.toFixed(2)}`);
+  }
+  if (dv.byteLength >= 24) {
+    const tilt = f32le(dv, 12);
+    const tiltDot = f32le(dv, 16);   // [4] tilt_dot (rad/s)
+    const mode = Math.round(f32le(dv, 20));
+    setText("liveTilt", `tilt = ${toDeg(tilt).toFixed(1)}°`);
+    onTiltRate(tiltDot);
+    updateModePill(mode);
+    balanceLive.tilt = tilt;
+    balanceLive.mode = mode;
+  }
+  if (dv.byteLength >= 28) balanceLive.posErrSat = f32le(dv, 24);
+  if (dv.byteLength >= 32) onTiltBias(f32le(dv, 28));
+}
+// 80-byte packet (fw ≥1834, plant=1 only): acro state at the full
+// ~60 Hz stream rate — f32 qimu(deg)@64, wimu(deg/s)@68, sh(deg)@72,
+// wsh(deg/s)@76. Same values/units as the [ACRO] line, which remains
+// authoritative for hang=/st= — this drives only the motion (figure,
+// pills, plots), still rendered raw per the operator decision.
+function applyAcroTelemetry(dv) {
+  const m = readAcroMotion(dv);
+  acroApplyMotion(m.qimu, m.wimu, m.sh, m.wsh);
+  // SysID recorder — captures this same sample on the fw t_ms timebase;
+  // reads the applied elbow torque @80 when the (proposed) 84-byte
+  // packet arrives. No-op unless a recording is running.
+  sidOnPacket(dv);
+}
+
+// Seconds (1 dp) since a performance.now() stamp — the "up=" in drop logs.
+const upSecs = (t0) => Math.round((performance.now() - t0) / 100) / 10;
+
+// FOC event-channel line (BLE notify text). Status tags feed the UI; every
+// line not explicitly swallowed below still echoes to the console.
+function onEventText(text) {
+  // [HB] — 2 Hz idle keepalive. Pure no-op: reset the link-alive watchdog
+  // and don't echo to the console (it would spam during quiet periods).
+  if (text.startsWith("[HB]")) { petTelemetry(); return; }
+  // [HLT] — 3 s pipeline-health line (name=value pairs, parsed
+  // generically so appended tokens are tolerated). Feeds the health
+  // strip; suppressed from the console except regressions.
+  if (text.startsWith("[HLT]")) { onHealthLine(text); return; }
+  updateLiftChips(text);
+  // [SYS] <mode> <loop>/<main> soc=… armed=… dphi=… coh=… ld=…  (~every 3 s).
+  // Absorbed silently (would otherwise spam the console).
+  if (text.startsWith("[SYS]")) { onSysLine(text); return; }
+  // [MODE] transitions — authoritative for the Lie-down/Stand-up button.
+  // "[MODE] DAMPED (hold) …" → held; "balance armed"/"STAND-UP kick" → released.
+  if (/^\[MODE\]/i.test(text)) {
+    setDampedState(/\bDAMPED\b/i.test(text));
+    // fall through so the transition still echoes to the console
+  }
+  // [GRAV] swing AXIS=… confirms the GA swing-axis cal → flip the Axis pill.
+  // (Rejection lines "GA needs GH" / "GA rejected…" fall through to echo.)
+  if (/^\[GRAV\]/i.test(text) && /swing\s+AXIS=/i.test(text)) {
+    setAcroAxis(true);
+  }
+  // [SID] — sysid-excitation lifecycle (proposed contract, forFWfromUI.md
+  // 2026-07-21): begin/done/abort. done/abort finalize the recorder; every
+  // line falls through to the normal console echo.
+  if (/^\[SID\]/i.test(text)) {
+    onSidLine(text);
+  }
+  // [ACRO] — ~4 Hz acrobot readout; echo suppressed (see onAcroLine).
+  if (/^\[ACRO\]/i.test(text)) { onAcroLine(text); return; }
+  // [SWP] … probe-sweep lines (begin / data row / captured / paired / saved).
+  // Capture into the run-vs-run table + charts so the ground/air gap is
+  // visible, and still echo to the console so the raw lines aren't lost.
+  if (/^\[SWP\]/i.test(text)) {
+    captureSweepLine(text);
+  }
+  // NVS dump line — seed the detector-param controls (probe freq, Wa
+  // threshold, observer bandwidth) from the knob's stored values.
+  if (/^NVS\b/i.test(text)) {
+    applyNvsLine(text);
+  }
+  // [TUN] — self-describing live-tunable registry (full dump from Z, or a
+  // single "name=value set" echo). Builds/updates the Tuning panel.
+  if (/^\[TUN\]/i.test(text)) {
+    applyTunLine(text);
+  }
+  if (/^\[CAL\]/i.test(text)) onCalLine(text);
+  if (/^\[WIFI\]/i.test(text)) onWifiLine(text);
+  log("← " + (text || "(empty event)"));
+}
+// Lift-detector coherence rides along on [SYS] (~3 s) and [ATT] (blocked
+// entry) lines — pull it into the confidence chip wherever it appears.
+function updateLiftChips(text) {
+  const cohM = text.match(/\bcoh=([\d.]+)/);
+  if (cohM) setCoh(parseFloat(cohM[1]));
+  // wa=<g/V>(><thr>) on [SYS]/[ATT]: comparator '>' = above gate = on ground.
+  const waM = text.match(/\bwa=([\d.]+)\s*\(\s*([<>])\s*([\d.]+)\s*\??\)/);
+  if (waM) setContact(parseFloat(waM[1]), waM[2] === ">");
+}
+// [SYS]: pull the loop/main rate into the speedometer, e.g.
+// "[SYS] BAL 9.0k/.. soc=64% …" → "9.0k Hz".
+function onSysLine(text) {
+  const m  = text.match(/(\d[\d.]*k?)\/(\S+)/);
+  if (m) setText("liveLoopHz", (m[2] && m[2] !== "..") ? `${m[1]}/${m[2]} Hz` : `${m[1]} Hz`);
+  // Mode word (first token: BAL/HAP/FF/LOCK/DAMP/ACRO) drives the
+  // M-button state and the acrobot plant indicator — authoritative, so a
+  // plant switch from elsewhere (or a saved plant=1 at boot) reflects here.
+  const sm = text.match(/^\[SYS\]\s+(\w+)/);
+  if (sm) {
+    setDampedState(sm[1] === "DAMP");
+    setAcroActive(sm[1] === "ACRO");
+  }
+}
+// [ACRO] hang=<0|1> st=<off|swing|bal> qimu=<deg> wimu=<deg/s> sh=<deg> wsh=<deg/s>
+// — ~4 Hz acrobot readout (plant=1), AUTHORITATIVE for hang=/st= (the
+// binary packet carries no flags). Wire primitives: qimu = the IMU's
+// world-frame angle — link 1 on this rig (fw confirmed 2026-07-17 (d)
+// and renamed the tokens from the ambiguous q2=/w2=; old spellings
+// kept as a fallback for pre-1834 firmware) — and the shaft encoder
+// sh. Link 2 is DERIVED = qimu ± sh (sign from the acro-card flip
+// toggle). While fw ≥1834 streams the 80-byte packet, motion comes at
+// ~60 Hz from there and this line mostly matters for the flags.
+// \b on the key so tokenNum("sh") can't match inside "wsh=".
+function onAcroLine(text) {
+  const tokenNum = key => {
+    const match = text.match(new RegExp("\\b" + key + "=(-?[\\d.]+)"));
+    return match ? parseFloat(match[1]) : null;
+  };
+  const taskMatch = text.match(/\bst=(\w+)/);
+  onAcro((tokenNum("hang") ?? 0) | 0,
+         tokenNum("qimu") ?? tokenNum("q2") ?? 0, tokenNum("wimu") ?? tokenNum("w2") ?? 0,
+         tokenNum("sh") ?? 0, tokenNum("wsh") ?? 0, taskMatch ? taskMatch[1] : null,
+         tokenNum("qacc"));   // accel-only diagnostic angle (fw (e)+; null if absent)
+}
+// [CAL] events: STALE / "probe freq=… set — re-run W" nudge the operator
+// to re-run the sweep; probe-freq / wa_thr echoes sync the param controls.
+function onCalLine(text) {
+  if (/\bSTALE\b|re-run\s+W/i.test(text)) showSweepStale(text);
+  const pf = text.match(/probe freq=([\d.]+)/i) || text.match(/probe is\s*([\d.]+)\s*Hz/i);
+  if (pf) syncProbeF(parseFloat(pf[1]));
+  const wt = text.match(/\bwa_thr=([\d.]+)\s*set/i);
+  if (wt) syncWaThr(parseFloat(wt[1]));
+}
+// [WIFI] ssid/pass set | creds cleared — keep the STA flag in sync with
+// the knob's confirmation (e.g. creds cleared from elsewhere).
+function onWifiLine(text) {
+  if (/cleared/i.test(text)) { wifiStaConfigured = false; refreshWifiHint(); }
+  else if (/ssid\s+set/i.test(text)) { wifiStaConfigured = true; refreshWifiHint(); }
 }
 
 class SerialTransport {
@@ -2683,10 +2791,7 @@ class SerialTransport {
       while (!this._stopReader) {
         const { value, done } = await this.reader.read();
         if (done) break;
-        this.lineBuf += dec.decode(value, { stream: true });
-        const lines = this.lineBuf.split("\n");
-        this.lineBuf = lines[lines.length - 1];
-        for (let i = 0; i < lines.length - 1; i++) onSerialLine(lines[i].replace(/\r$/, ""));
+        this._feedLines(dec.decode(value, { stream: true }));
       }
     } catch (e) {
       this._readError = errMsg(e);
@@ -2694,31 +2799,39 @@ class SerialTransport {
       try { this.reader.releaseLock(); } catch (e) {}
       this.reader = null;
       if (!this._stopReader) {
-        const dt = Math.round((performance.now() - this._connectedAt) / 100) / 10;
-        onDisconnect(`Serial reader ended — err=${this._readError || "EOF"} up=${dt}s`);
+        onDisconnect(`Serial reader ended — err=${this._readError || "EOF"} up=${upSecs(this._connectedAt)}s`);
       }
     }
+  }
+  // Append decoded text; dispatch each complete line (CR stripped), keeping
+  // the trailing partial line buffered for the next chunk.
+  _feedLines(chunk) {
+    this.lineBuf += chunk;
+    const lines = this.lineBuf.split("\n");
+    this.lineBuf = lines[lines.length - 1];
+    for (let i = 0; i < lines.length - 1; i++) onSerialLine(lines[i].replace(/\r$/, ""));
+  }
+  // Send a one-line request, then wait (2 s) for the reply that onSerialLine
+  // hands to the waiter installed via setWaiter. Resolves with the reply, or
+  // null on timeout / write error.
+  _request(cmd, setWaiter) {
+    return new Promise(async (resolve) => {
+      const timer = setTimeout(() => { setWaiter(null); resolve(null); }, 2000);
+      setWaiter({ resolve: (reply) => { clearTimeout(timer); resolve(reply); } });
+      try { await this.writer.write(enc.encode(cmd)); }
+      catch (e) { clearTimeout(timer); setWaiter(null); resolve(null); }
+    });
   }
   async readParams() {
     // Send Q\n, wait for the matching response line. Returns the raw
     // Q-line string, or null on timeout / write error.
-    return new Promise(async (resolve) => {
-      const timer = setTimeout(() => { qWaiter = null; resolve(null); }, 2000);
-      qWaiter = { resolve: (line) => { clearTimeout(timer); resolve(line); } };
-      try { await this.writer.write(enc.encode("Q\n")); }
-      catch (e) { clearTimeout(timer); qWaiter = null; resolve(null); }
-    });
+    return this._request("Q\n", (w) => { qWaiter = w; });
   }
   async readPresets() {
     // Send p\n, wait for the "PRESETS <json>" reply line (serial lines
     // are unbounded, so the whole blob arrives intact). Returns the JSON
     // string, or null on timeout / write error.
-    return new Promise(async (resolve) => {
-      const timer = setTimeout(() => { presetWaiter = null; resolve(null); }, 2000);
-      presetWaiter = { resolve: (s) => { clearTimeout(timer); resolve(s); } };
-      try { await this.writer.write(enc.encode("p\n")); }
-      catch (e) { clearTimeout(timer); presetWaiter = null; resolve(null); }
-    });
+    return this._request("p\n", (w) => { presetWaiter = w; });
   }
   async writeCmd(line) {
     await this.writer.write(enc.encode(line));
@@ -2741,96 +2854,94 @@ let transport = null;
 // Parse a Q-style or params-style string ("dN=... k0=... ...") and
 // push the matching values into paramState + the slider UI.
 function applyParamsString(raw) {
-  const map = { dN: "detent_n", dA: "detent_a", dK: "detent_k",
-                dD: "b_damp",
-                J:  "j_virt",   BC: "b_couple",
-                k0: "k_x", k1: "k_xv", k2: "k_th", k3: "k_thd",
-                xref: "x_ref",
-                fcV: "fc_shaft_vel", fcT: "fc_tilt" };
-  for (const part of raw.trim().split(/\s+/)) {
-    const eq = part.indexOf("=");
-    if (eq <= 0) continue;
-    const k = part.slice(0, eq);
-    const valStr = part.slice(eq + 1);
-    if (k === "mode") {
-      updateModePill(parseInt(valStr, 10));
-      continue;
-    }
-    if (k === "gUSet" || k === "gFSet" || k === "tRot") {
-      if (k === "gUSet")      balanceState.upCalSet    = (valStr === "1");
-      else if (k === "gFSet") balanceState.flatCalSet  = (valStr === "1");
-      else                    balanceState.tiltAxisRot = parseInt(valStr, 10) || 0;
-      updateCalStatus();
-      continue;
-    }
-    if (k === "tag") {
-      const pill = document.getElementById("fwBuildPill");
-      if (pill) pill.textContent = `fw ${valStr}`;
-      continue;
-    }
+  for (const [k, valStr] of blobPairs(raw)) {
+    if (applyStatusToken(k, valStr)) continue;
     let v = parseFloat(valStr);
-    const slider_key = map[k];
-    if (!slider_key || Number.isNaN(v)) continue;
+    const sliderKey = TOKEN_PARAM[k];
+    if (!sliderKey || Number.isNaN(v)) continue;
     // Firmware reports xref in shaft rad; UI shows mm.
     // Sign-flipped so the slider direction matches physical motion.
-    if (slider_key === "x_ref") v = -v * WHEEL_RADIUS_MM;
-    if (sliderEls[slider_key]) {
-      const p = PARAMS.find(x => x.key === slider_key);
-      paramState[slider_key] = v;
-      // Slider value is slider-space; translate for log-scaled params
-      // (lpfSliderOf is identity for linear ones).
-      sliderEls[slider_key].value = p ? lpfSliderOf(p, v) : v;
-      if (sliderValueEls[slider_key]) {
-        sliderValueEls[slider_key].textContent = p ? p.fmt(v) : v;
-      }
-    } else if (lqrSliderEls[slider_key]) {
-      const p = LQR_PARAMS.find(x => x.key === slider_key);
-      lqrState[slider_key] = v;
-      // For log-scaled params (LPF cutoffs) the slider's own value
-      // is in slider-space, not value-space — translate before write.
-      lqrSliderEls[slider_key].value = lpfSliderOf(p, v);
-      if (lqrValueEls[slider_key]) {
-        lqrValueEls[slider_key].textContent = p ? p.fmt(v) : v;
-      }
+    if (sliderKey === "x_ref") v = -v * WHEEL_RADIUS_MM;
+    if (sliderEls[sliderKey]) {
+      paramState[sliderKey] = v;
+      showParamValue(PARAM_BY_KEY[sliderKey], sliderEls[sliderKey], sliderValueEls[sliderKey], v);
+    } else if (lqrSliderEls[sliderKey]) {
+      lqrState[sliderKey] = v;
+      showParamValue(LQR_BY_KEY[sliderKey], lqrSliderEls[sliderKey], lqrValueEls[sliderKey], v);
     }
   }
   // Sync the momentum checkbox to what the knob reports.
   if (typeof momentumChk !== "undefined" && momentumChk) {
-    momentumChk.checked = (paramState.b_couple || 0) > 1e-6;
-    setMomentumSlidersDisabled(!momentumChk.checked);
+    setMomentumOn((paramState.b_couple || 0) > 1e-6);
   }
   drawProfile();
   drawRing();
+}
+// Non-slider tokens of the params blob (mode, cal flags, build tag).
+// Returns true when k was one of them (and has been applied).
+function applyStatusToken(k, valStr) {
+  if (k === "mode") {
+    updateModePill(parseInt(valStr, 10));
+    return true;
+  }
+  if (k === "gUSet" || k === "gFSet" || k === "tRot") {
+    if (k === "gUSet")      balanceState.upCalSet    = (valStr === "1");
+    else if (k === "gFSet") balanceState.flatCalSet  = (valStr === "1");
+    else                    balanceState.tiltAxisRot = parseInt(valStr, 10) || 0;
+    updateCalStatus();
+    return true;
+  }
+  if (k === "tag") {
+    setText("fwBuildPill", `fw ${valStr}`);
+    return true;
+  }
+  return false;
+}
+// Value-space → slider + readout. The slider's own value is slider-space, so
+// log-scaled params (LPF cutoffs) are translated first (lpfSliderOf is the
+// identity for linear ones).
+function showParamValue(p, sld, valEl, v) {
+  sld.value = lpfSliderOf(p, v);
+  if (valEl) valEl.textContent = p.fmt(v);
 }
 
 // ─── Top-level event handlers ───────────────────────────────────────────────
 let qWaiter = null;       // {resolve} for the next "Q ..." line over serial.
 let presetWaiter = null;  // {resolve} for the next "PRESETS ..." line.
 function onSerialLine(line) {
-  if (line.startsWith("torque:")) {
-    const v = parseFloat(line.slice(7));
-    if (!Number.isNaN(v)) { onTelem(v); return; }
-  }
+  if (line.startsWith("torque:") && onSerialTorque(line)) return;
+  if (takeSerialReply(line)) return;
+  if (line.length) log("← " + line);
+}
+// "torque:<V>" telemetry line; false when the value doesn't parse (then echoed).
+function onSerialTorque(line) {
+  const v = parseFloat(line.slice(7));
+  if (Number.isNaN(v)) return false;
+  onTelem(v);
+  return true;
+}
+// Hand a reply line to the request waiting for it; true when consumed.
+function takeSerialReply(line) {
   if (qWaiter && line.startsWith("Q ")) {
     const w = qWaiter; qWaiter = null;
     w.resolve(line);
-    return;   // don't echo the (periodic) Q reply to the console
+    return true;   // don't echo the (periodic) Q reply to the console
   }
   if (presetWaiter && line.startsWith("PRESETS ")) {
     const w = presetWaiter; presetWaiter = null;
     w.resolve(line.slice(8));   // strip the "PRESETS " prefix
-    return;
+    return true;
   }
-  if (line.length) log("← " + line);
+  return false;
 }
 function onDisconnect(reason) {
   log(`[DISCONNECT] ${reason || "unknown reason"}`, "bad");
   // If this is a BLE transport that will auto-reconnect, keep the
   // instance around so its retry loop has somewhere to land. The user
-  // explicitly clicking Disconnect already sets _userDisconnected, so
+  // explicitly clicking Disconnect already clears willAutoReconnect(), so
   // the auto-loop will exit cleanly.
   const willReconnect = transport instanceof BleTransport
-                        && !transport._userDisconnected;
+                        && transport.willAutoReconnect();
   if (!willReconnect) transport = null;
   setStatus(false);
   stopKeepalive();
@@ -2842,11 +2953,12 @@ function onDisconnect(reason) {
 // BLE auto-reconnect loop is running. Cleared once the loop succeeds
 // (setStatus(true) wins) or the user gives up (setStatus(false)).
 function setReconnectStatus(on) {
-  if (on) {
-    statusEl.textContent = "Reconnecting…";
-    statusEl.className   = "pill bad";
-    btnConnect.textContent = "Cancel";
-  }
+  if (on) setLinkStatus("Reconnecting…", "pill bad", "Cancel");
+}
+// Header status pill + Connect button label.
+function setLinkStatus(text, cls, buttonLabel) {
+  statusEl.textContent = text; statusEl.className = cls;
+  btnConnect.textContent = buttonLabel;
 }
 
 // ─── UI ─────────────────────────────────────────────────────────────────────
@@ -2889,47 +3001,51 @@ if (btnDevMode) btnDevMode.onclick = () => setDevMode(!document.body.classList.c
 
 function setStatus(ok, name) {
   document.body.classList.toggle("connected", !!ok);   // drives connect-hint + .needs-conn gating
-  const flashBtn = document.getElementById("btnFlash");
   if (ok) {
-    statusEl.textContent = "Connected"; statusEl.className = "pill ok";
-    btnConnect.textContent = "Disconnect";
+    setLinkStatus("Connected", "pill ok", "Disconnect");
     if (name) { deviceInfoEl.textContent = name; _connectedName = name; }
-    if (flashBtn) { flashBtn.disabled = false; flashBtn.title = ""; }
+    setFlashEnabled(true);
     armTelemetryWatchdog();   // start the 1 s no-telemetry → disconnected guard
   } else {
-    statusEl.textContent = "Disconnected"; statusEl.className = "pill bad";
-    btnConnect.textContent = "Connect";
+    setLinkStatus("Disconnected", "pill bad", "Connect");
     deviceInfoEl.textContent = "";
-    // Blank EVERY live readout so a dropped link doesn't leave stale
-    // telemetry frozen on screen looking live.
-    const blanks = {
-      liveVoltage: "V = —", liveTorque: "τ = —", liveTilt: "tilt = —",
-      liveTiltRate: "tilt' = —",
-      liveTap: "taps —/—", liveFFWake: "ff/wk —/—", liveLoopHz: "— Hz",
-      fwBuildPill: "fw —",
-    };
-    for (const [id, txt] of Object.entries(blanks)) {
-      const el = document.getElementById(id); if (el) el.textContent = txt;
-    }
-    setDampedState(false);   // reset M-button label so a drop doesn't freeze "Stand up"
-    resetAcro();          // blank acrobot gauges/stick figure so they don't freeze stale
-    updateModePill(-1);   // → "— mode", neutral class
-    onBatterySoc(-1);     // → unknown/USB glyph, no stale charge level
-    setCoh(null);         // → "coh —", neutral (no stale confidence reading)
-    setContact(null);     // → "wa —", neutral (no stale ground-contact reading)
-    resetHealth();        // blank the health strip + header pill, drop seq/t_ms baselines
-    hideSweepStale();     // clear any probe-cal-stale nudge from a prior link
-    // Neutralize the balance visual so it doesn't hold the last pose.
-    if (typeof balanceLive !== "undefined") {
-      balanceLive.tilt = 0; balanceLive.posErrSat = 0; balanceLive.mode = 0; balanceLive.shaftAngle = 0;
-      // Snap the eased twin state too — the 60 fps loop stops on disconnect,
-      // so this one-shot redraw must not show a stale eased pose.
-      twinDisp.tilt = 0; twinDisp.posErrSat = 0; twinDisp.shaft = 0;
-      if (typeof drawBalance === "function" && !balanceRaf) balanceRaf = requestAnimationFrame(drawBalance);
-    }
-    if (flashBtn) { flashBtn.disabled = true; flashBtn.title = "Connect to the knob first"; }
+    clearLiveReadouts();
+    setFlashEnabled(false);
     clearTelemetryWatchdog();
   }
+}
+function setFlashEnabled(on) {
+  const flashBtn = document.getElementById("btnFlash");
+  if (flashBtn) { flashBtn.disabled = !on; flashBtn.title = on ? "" : "Connect to the knob first"; }
+}
+// Blank EVERY live readout so a dropped link doesn't leave stale
+// telemetry frozen on screen looking live.
+const LIVE_BLANKS = {
+  liveVoltage: "V = —", liveTorque: "τ = —", liveTilt: "tilt = —",
+  liveTiltRate: "tilt' = —",
+  liveTap: "taps —/—", liveFFWake: "ff/wk —/—", liveLoopHz: "— Hz",
+  fwBuildPill: "fw —",
+};
+function clearLiveReadouts() {
+  for (const [id, txt] of Object.entries(LIVE_BLANKS)) setText(id, txt);
+  setDampedState(false);   // reset M-button label so a drop doesn't freeze "Stand up"
+  resetAcro();          // blank acrobot gauges/stick figure so they don't freeze stale
+  updateModePill(-1);   // → "— mode", neutral class
+  onBatterySoc(-1);     // → unknown/USB glyph, no stale charge level
+  setCoh(null);         // → "coh —", neutral (no stale confidence reading)
+  setContact(null);     // → "wa —", neutral (no stale ground-contact reading)
+  resetHealth();        // blank the health strip + header pill, drop seq/t_ms baselines
+  hideSweepStale();     // clear any probe-cal-stale nudge from a prior link
+  resetBalanceVisual();
+}
+// Neutralize the balance visual so it doesn't hold the last pose.
+function resetBalanceVisual() {
+  if (typeof balanceLive === "undefined") return;
+  balanceLive.tilt = 0; balanceLive.posErrSat = 0; balanceLive.mode = 0; balanceLive.shaftAngle = 0;
+  // Snap the eased twin state too — the 60 fps loop stops on disconnect,
+  // so this one-shot redraw must not show a stale eased pose.
+  twinDisp.tilt = 0; twinDisp.posErrSat = 0; twinDisp.shaft = 0;
+  if (typeof drawBalance === "function" && !balanceRaf) balanceRaf = requestAnimationFrame(drawBalance);
 }
 
 // ─── Telemetry watchdog ─────────────────────────────────────────────────────
@@ -2958,10 +3074,7 @@ function onTelemetryTimeout() {
   // GATT still claims to be connected but the stream is dead. Tear it down so
   // the gattserverdisconnected path immediately starts the reconnect loop
   // (instead of sitting Disconnected waiting for a packet that won't come).
-  if (transport instanceof BleTransport && transport.device
-      && transport.device.gatt && transport.device.gatt.connected) {
-    try { transport.device.gatt.disconnect(); } catch (e) { /* listener handles it */ }
-  }
+  if (transport instanceof BleTransport) transport.dropStaleLink();
 }
 // Call on every telemetry packet to keep the link "alive".
 function petTelemetry() {
@@ -2990,11 +3103,37 @@ const linkStat = {
   dropLog: [], stallLog: [],        // {t, n} recent events, ~5 s (pill coloring)
   rxWin: 0,                         // packets received since last [HLT] (Δatx audit)
 };
-const hltStat = { prev: {}, life: {}, fhzHist: [] };
+const hltStat = {
+  prev: {}, life: {},               // cumulative-counter baselines / lifetime totals
+  fhzHist: [],                      // recent fhz samples (median reference)
+  regLogMs: {}, rawLogMs: 0,        // console rate-limit stamps (per counter / raw echo)
+  hadWin: false,                    // a previous window exists (Δatx needs one)
+  rstLogged: false,                 // crash reset reason already reported
+};
 const healthParts = {};
+
+// Drop the oldest {t} entries stamped before cutoff (arrays are time-ordered).
+function pruneBefore(arr, cutoff) { while (arr.length && arr[0].t < cutoff) arr.shift(); }
+// Keep the ~2 s arrival-stamp window (packet rate).
+function pruneArrivals(now) {
+  const a = linkStat.arrTimes;
+  while (a.length && a[0] < now - 2000) a.shift();
+}
 
 function onPktMeta(seq, tms) {
   const now = performance.now();
+  trackArrival(now);
+  if (seq !== null) trackSeq(seq, tms, now);
+  if (tms !== null) {
+    // Clock-domain bridge: latency ≈ (arrival − t_ms) − min(arrival − t_ms)
+    // over the window; the rolling min is the transport's floor.
+    linkStat.offs.push({ t: now, off: now - tms });
+    pruneBefore(linkStat.offs, now - 10000);
+    linkStat.lastTms = tms;
+  }
+}
+// Client-side arrival bookkeeping: inter-arrival gap, rate window, rx count.
+function trackArrival(now) {
   const L = linkStat;
   if (L.lastArr) {
     L.gaps.push({ t: now, gap: now - L.lastArr });
@@ -3003,47 +3142,49 @@ function onPktMeta(seq, tms) {
   L.lastArr = now;
   L.rxWin++;
   L.arrTimes.push(now);
-  while (L.arrTimes.length && L.arrTimes[0] < now - 2000) L.arrTimes.shift();
-  if (seq !== null) {
-    if (L.lastSeq !== null && seq < L.lastSeq) {
-      // seq went backwards → firmware rebooted / new session. Re-baseline
-      // (NOT 4-billion drops).
-      L.drops = 0; L.dropLog.length = 0; L.stallLog.length = 0; L.lastTms = null;
-    } else if (L.lastSeq !== null) {
-      const missed = seq - L.lastSeq - 1;
-      if (missed > 0) {
-        // Real radio drops — packets sent but never delivered.
-        L.drops += missed;
-        L.dropLog.push({ t: now, n: missed });
-      } else if (tms !== null && L.lastTms !== null
-                 && ((tms - L.lastTms) >>> 0) > 50) {
-        // Contiguous seq but stretched t_ms → nothing was lost: either the
-        // congestion gate skipped to a fresher frame (adf) or fw pacing
-        // stalled. A stall episode, NOT a drop.
-        L.stallLog.push({ t: now, n: 1 });
-      }
-    }
-    L.lastSeq = seq;
-  }
-  if (tms !== null) {
-    // Clock-domain bridge: latency ≈ (arrival − t_ms) − min(arrival − t_ms)
-    // over the window; the rolling min is the transport's floor.
-    L.offs.push({ t: now, off: now - tms });
-    while (L.offs.length && L.offs[0].t < now - 10000) L.offs.shift();
-    L.lastTms = tms;
-  }
+  pruneArrivals(now);
 }
+// seq continuity → drops vs stalls (uses the previous t_ms, so it runs before
+// onPktMeta records the new one).
+function trackSeq(seq, tms, now) {
+  const L = linkStat;
+  if (L.lastSeq !== null && seq < L.lastSeq) {
+    // seq went backwards → firmware rebooted / new session. Re-baseline
+    // (NOT 4-billion drops).
+    L.drops = 0; L.dropLog.length = 0; L.stallLog.length = 0; L.lastTms = null;
+  } else if (L.lastSeq !== null) {
+    const missed = seq - L.lastSeq - 1;
+    if (missed > 0) {
+      // Real radio drops — packets sent but never delivered.
+      L.drops += missed;
+      L.dropLog.push({ t: now, n: missed });
+    } else if (tms !== null && L.lastTms !== null
+               && ((tms - L.lastTms) >>> 0) > 50) {
+      // Contiguous seq but stretched t_ms → nothing was lost: either the
+      // congestion gate skipped to a fresher frame (adf) or fw pacing
+      // stalled. A stall episode, NOT a drop.
+      L.stallLog.push({ t: now, n: 1 });
+    }
+  }
+  L.lastSeq = seq;
+}
+
+// Health pill per part: key → [element id, blank text].
+const HEALTH_PILLS = {
+  link: ["hpLink", "link —"], lat: ["hpLat", "lat —"], loops: ["hpLoops", "loops —"],
+  glitch: ["hpGlitch", "glitch —"], age: ["hpAge", "age —"], tx: ["hpDrop", "tx —"],
+  boot: ["hpBoot", "rst —"],
+};
+const healthClass = lvl => "pill" + (lvl === 2 ? " bad" : lvl === 1 ? " warn" : lvl === 0 ? " ok" : "");
 
 // Per-pill update + header aggregate. lvl: 0 ok · 1 warn · 2 bad · null neutral.
 function setHealthPart(key, lvl, text, offender) {
-  const ids = { link: "hpLink", lat: "hpLat", loops: "hpLoops",
-                glitch: "hpGlitch", age: "hpAge", tx: "hpDrop", boot: "hpBoot" };
-  const el = document.getElementById(ids[key]);
-  if (el) {
-    el.textContent = text;
-    el.className = "pill" + (lvl === 2 ? " bad" : lvl === 1 ? " warn" : lvl === 0 ? " ok" : "");
-  }
+  setPill(HEALTH_PILLS[key][0], text, healthClass(lvl));
   healthParts[key] = { lvl, offender };
+  refreshHealthPill();
+}
+// Header aggregate pill: the worst graded part names the offender.
+function refreshHealthPill() {
   const hp = document.getElementById("healthPill");
   if (!hp) return;
   let worst = null;
@@ -3057,108 +3198,140 @@ function setHealthPart(key, lvl, text, offender) {
          hp.className = "pill " + (worst.lvl === 2 ? "bad" : "warn"); }
 }
 
-function onHlt(text) {
-  const vals = {};
-  const re = /\b([A-Za-z_]\w*)=(-?[\w.]+)/g;   // generic name=value — appended tokens tolerated
-  let m; while ((m = re.exec(text))) vals[m[1]] = m[2];
-  const num = k => { const v = parseFloat(vals[k]); return Number.isNaN(v) ? null : v; };
+// [HLT] glitch counters (cumulative): meaning strings double as console text.
+const HLT_GLITCHES = { rdf: "IMU read failures", dtc: "estimator ticks >20 ms",
+                       rec: "IMU bus recoveries", so2: "sense ticks late >2 ms",
+                       so5: "sense ticks late >5 ms" };
+const HLT_CUM_KEYS = [...Object.keys(HLT_GLITCHES), "atx", "adf"];
+
+function onHealthLine(text) {
+  const tokens = parseNameValues(text);
+  const numOf = name => { const v = parseFloat(tokens[name]); return Number.isNaN(v) ? null : v; };
+  const delta = hltWindowDeltas(numOf);
+  hltGlitchPart(text, tokens, delta, numOf("ctjmp") || 0);
+  hltLoopsPart(numOf("shz"), numOf("fhz"), numOf("lhz"));
+  // IMU staleness.
+  const age = numOf("age");
+  if (age !== null) {
+    setHealthPart("age", age > 50 ? 2 : age > 5 ? 1 : 0, `age ${age} ms`, `age ${age}ms`);
+  }
+  hltTxPart(delta.atx, delta.adf || 0);
+  if (tokens.rst !== undefined) hltBootPart(tokens.rst);
+  // Free-heap (informational — surfaces via the link tooltip, see ticker).
+  if (tokens.heap !== undefined) linkStat.heap = tokens.heap;
+}
+// Generic name=value parse — appended tokens tolerated.
+function parseNameValues(text) {
+  const tokens = {};
+  const re = /\b([A-Za-z_]\w*)=(-?[\w.]+)/g;
+  let m; while ((m = re.exec(text))) tokens[m[1]] = m[2];
+  return tokens;
+}
+// Cumulative counters → per-window deltas (0 on first sight). A counter that
+// went backwards (fw reboot) re-baselines silently.
+function hltWindowDeltas(num) {
   const H = hltStat;
-  // Glitch counters (cumulative): meaning strings double as console text.
-  const CUM = { rdf: "IMU read failures", dtc: "estimator ticks >20 ms",
-                rec: "IMU bus recoveries", so2: "sense ticks late >2 ms",
-                so5: "sense ticks late >5 ms" };
-  const cumKeys = [...Object.keys(CUM), "atx", "adf"];
-  if (cumKeys.some(k => num(k) !== null && H.prev[k] !== undefined && num(k) < H.prev[k])) {
+  if (HLT_CUM_KEYS.some(k => num(k) !== null && H.prev[k] !== undefined && num(k) < H.prev[k])) {
     H.prev = {}; H.life = {};       // counters reset (fw reboot) — re-baseline silently
   }
   const delta = {};
-  for (const k of cumKeys) {
+  for (const k of HLT_CUM_KEYS) {
     const v = num(k); if (v === null) continue;
     delta[k] = H.prev[k] !== undefined ? v - H.prev[k] : 0;
     H.prev[k] = v; H.life[k] = v;
   }
-  // Glitches — per-window deltas, flag rising; ctjmp is already per-window.
-  const ctjmp = num("ctjmp") || 0;
-  let worstK = null, worstN = 0, anyReg = false;
+  return delta;
+}
+// Glitches — per-window deltas, flag rising; ctjmp is already per-window.
+function hltGlitchPart(text, tokens, delta, ctjmp) {
+  let worstKey = null, worstRise = 0;
+  for (const counter of Object.keys(HLT_GLITCHES)) {
+    const rise = delta[counter] || 0;
+    if (rise > worstRise) { worstRise = rise; worstKey = counter; }
+  }
+  hltLogGlitchRises(text, tokens, delta);
+  if (ctjmp > worstRise) { worstRise = ctjmp; worstKey = "ctjmp"; }
+  const glitchPill = document.getElementById("hpGlitch");
+  if (glitchPill) glitchPill.title = hltGlitchTooltip(tokens, ctjmp);
+  setHealthPart("glitch", worstRise > 0 ? 1 : 0,
+                worstRise > 0 ? `glitch ${worstKey}+${worstRise}` : "glitch ✓",
+                `${worstKey}+${worstRise}`);
+}
+// Console lines for rising glitch counters.
+function hltLogGlitchRises(text, tokens, delta) {
   // Timing context on every regression line — smax (worst inter-tick gap) vs
   // sexe (worst step execution, fw (f)+) is the starvation discriminator.
-  const ctx = ` (smax=${vals.smax ?? "?"}µs sexe=${vals.sexe ?? "?"}µs shz=${vals.shz ?? "?"} fhz=${vals.fhz ?? "?"})`;
-  const hnow = performance.now();
-  H._regLogMs = H._regLogMs || {};
-  for (const k of Object.keys(CUM)) {
-    const d = delta[k] || 0;
-    if (d > worstN) { worstN = d; worstK = k; }
-    if (d > 0) {
-      anyReg = true;
-      // Rate-limit: a persistently-rising counter otherwise floods the console
-      // (2 lines / 3 s on the bench). First hit logs; repeats at most every
-      // 30 s — the glitch pill carries the ongoing state between lines.
-      if (!(k in H._regLogMs) || hnow - H._regLogMs[k] >= 30000) {
-        H._regLogMs[k] = hnow;
-        log(`[HLT] regression: ${k}+${d} — ${CUM[k]} (lifetime ${H.life[k]})${ctx}`, "warn");
-      }
+  const timing = ` (smax=${tokens.smax ?? "?"}µs sexe=${tokens.sexe ?? "?"}µs shz=${tokens.shz ?? "?"} fhz=${tokens.fhz ?? "?"})`;
+  const now = performance.now();
+  let anyRise = false;
+  for (const counter of Object.keys(HLT_GLITCHES)) {
+    const rise = delta[counter] || 0;
+    if (!(rise > 0)) continue;
+    anyRise = true;
+    // Rate-limit: a persistently-rising counter otherwise floods the console
+    // (2 lines / 3 s on the bench). First hit logs; repeats at most every
+    // 30 s — the glitch pill carries the ongoing state between lines.
+    if (!(counter in hltStat.regLogMs) || now - hltStat.regLogMs[counter] >= 30000) {
+      hltStat.regLogMs[counter] = now;
+      log(`[HLT] regression: ${counter}+${rise} — ${HLT_GLITCHES[counter]} (lifetime ${hltStat.life[counter]})${timing}`, "warn");
     }
   }
   // While regressing, echo one RAW [HLT] line per 30 s so a console paste
   // carries the full window for cross-boundary diagnosis.
-  if (anyReg && (!H._rawLogMs || hnow - H._rawLogMs >= 30000)) {
-    H._rawLogMs = hnow;
+  if (anyRise && (!hltStat.rawLogMs || now - hltStat.rawLogMs >= 30000)) {
+    hltStat.rawLogMs = now;
     log(`← ${text}`);
   }
-  if (ctjmp > worstN) { worstN = ctjmp; worstK = "ctjmp"; }
-  const gEl = document.getElementById("hpGlitch");
-  if (gEl) gEl.title = "Glitch counters, Δ per 3 s window — lifetime totals: "
-    + Object.keys(CUM).map(k => `${k}=${H.life[k] ?? "—"}`).join(" ")
-    + ` · ctjmp(win)=${ctjmp} · smax=${vals.smax ?? "—"}µs sexe=${vals.sexe ?? "—"}µs ctmax=${vals.ctmax ?? "—"}µs fmax=${vals.fmax ?? "—"}µs`;
-  setHealthPart("glitch", worstN > 0 ? 1 : 0,
-                worstN > 0 ? `glitch ${worstK}+${worstN}` : "glitch ✓",
-                `${worstK}+${worstN}`);
-  // Loop rates — shz green 990–1010, lhz amber <300, fhz steady vs its median.
-  const shz = num("shz"), fhz = num("fhz"), lhz = num("lhz");
-  if (shz !== null) {
-    if (fhz !== null) {
-      H.fhzHist.push(fhz); if (H.fhzHist.length > 20) H.fhzHist.shift();
-    }
-    const fMed = H.fhzHist.length
-      ? [...H.fhzHist].sort((a, b) => a - b)[H.fhzHist.length >> 1] : fhz;
-    const shzBad = shz < 900, shzWarn = shz < 990 || shz > 1010;
-    const lhzWarn = lhz !== null && lhz < 300;
-    const fhzWarn = fhz !== null && fMed && Math.abs(fhz - fMed) > 0.15 * fMed;
-    const lvl = shzBad ? 2 : (shzWarn || lhzWarn || fhzWarn) ? 1 : 0;
-    const fk = v => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`;
-    setHealthPart("loops", lvl, `loops ${shz}/${fk(fhz ?? 0)}/${lhz ?? "—"}`,
-                  shzBad || shzWarn ? `shz ${shz}` : lhzWarn ? `lhz ${lhz}` : `fhz ${fhz}`);
+}
+function hltGlitchTooltip(tokens, ctjmp) {
+  return "Glitch counters, Δ per 3 s window — lifetime totals: "
+    + Object.keys(HLT_GLITCHES).map(counter => `${counter}=${hltStat.life[counter] ?? "—"}`).join(" ")
+    + ` · ctjmp(win)=${ctjmp} · smax=${tokens.smax ?? "—"}µs sexe=${tokens.sexe ?? "—"}µs ctmax=${tokens.ctmax ?? "—"}µs fmax=${tokens.fmax ?? "—"}µs`;
+}
+// Loop rates — shz green 990–1010, lhz amber <300, fhz steady vs its median.
+function hltLoopsPart(shz, fhz, lhz) {
+  if (shz === null) return;
+  const fhzMedian = trackFhzMedian(fhz);
+  const shzBad = shz < 900, shzWarn = shz < 990 || shz > 1010;
+  const lhzWarn = lhz !== null && lhz < 300;
+  const fhzWarn = fhz !== null && fhzMedian && Math.abs(fhz - fhzMedian) > 0.15 * fhzMedian;
+  const level = shzBad ? 2 : (shzWarn || lhzWarn || fhzWarn) ? 1 : 0;
+  const offender = shzBad || shzWarn ? `shz ${shz}` : lhzWarn ? `lhz ${lhz}` : `fhz ${fhz}`;
+  setHealthPart("loops", level, `loops ${shz}/${kiloHz(fhz ?? 0)}/${lhz ?? "—"}`, offender);
+}
+// Add fhz (when present) to the last-20 history; returns the history's median,
+// or fhz itself while the history is empty.
+function trackFhzMedian(fhz) {
+  const hist = hltStat.fhzHist;
+  if (fhz !== null) {
+    hist.push(fhz); if (hist.length > 20) hist.shift();
   }
-  // IMU staleness.
-  const age = num("age");
-  if (age !== null) {
-    setHealthPart("age", age > 50 ? 2 : age > 5 ? 1 : 0, `age ${age} ms`, `age ${age}ms`);
+  return hist.length ? [...hist].sort((a, b) => a - b)[hist.length >> 1] : fhz;
+}
+const kiloHz = hz => hz >= 1000 ? `${(hz / 1000).toFixed(1)}k` : `${hz}`;   // 9000 → "9.0k"
+// Δatx (sent) vs received this window; adf = deferral episodes (not drops).
+function hltTxPart(sent, deferrals) {
+  if (sent !== undefined && hltStat.hadWin) showTxAudit(sent, linkStat.rxWin, deferrals);
+  hltStat.hadWin = true;
+  linkStat.rxWin = 0;   // the next window counts afresh
+}
+function showTxAudit(sent, received, deferrals) {
+  const deficit = sent - received;
+  setHealthPart("tx", deficit > 5 ? 2 : deficit > 1 ? 1 : 0,
+                `tx ${received}/${sent}` + (deferrals ? ` adf+${deferrals}` : ""),
+                `tx −${deficit}`);
+  if (deferrals > 0) log(`[HLT] adf+${deferrals} — link stall(s), freshest-frame skip (deferred, not dropped)`);
+}
+// Reset reason — fw-enumerated set (contract (d)): PWR/SW/SLEEP = normal,
+// OTHER = unknown (amber), PANIC/IWDT/TWDT/WDT/BROWN = the last reboot CRASHED.
+function hltBootPart(rst) {
+  const normal  = /^(PWR|SW|SLEEP)$/i.test(rst);
+  const unknown = /^OTHER$/i.test(rst);
+  setHealthPart("boot", normal ? 0 : unknown ? 1 : 2, `rst ${rst}`, `rst ${rst}`);
+  if (!normal && !unknown && !hltStat.rstLogged) {
+    log(`[HLT] rst=${rst} — last reboot was a CRASH (not PWR/SW/SLEEP)`, "bad");
+    hltStat.rstLogged = true;
   }
-  // Δatx (sent) vs received this window; adf = deferral episodes (not drops).
-  const dAtx = delta.atx, adfD = delta.adf || 0;
-  if (dAtx !== undefined && hltStat._hadWin) {
-    const rx = linkStat.rxWin;
-    const deficit = dAtx - rx;
-    setHealthPart("tx", deficit > 5 ? 2 : deficit > 1 ? 1 : 0,
-                  `tx ${rx}/${dAtx}` + (adfD ? ` adf+${adfD}` : ""),
-                  `tx −${deficit}`);
-    if (adfD > 0) log(`[HLT] adf+${adfD} — link stall(s), freshest-frame skip (deferred, not dropped)`);
-  }
-  hltStat._hadWin = true;
-  linkStat.rxWin = 0;
-  // Reset reason — fw-enumerated set (contract (d)): PWR/SW/SLEEP = normal,
-  // OTHER = unknown (amber), PANIC/IWDT/TWDT/WDT/BROWN = the last reboot CRASHED.
-  if (vals.rst !== undefined) {
-    const normal  = /^(PWR|SW|SLEEP)$/i.test(vals.rst);
-    const unknown = /^OTHER$/i.test(vals.rst);
-    setHealthPart("boot", normal ? 0 : unknown ? 1 : 2, `rst ${vals.rst}`, `rst ${vals.rst}`);
-    if (!normal && !unknown && !H._rstLogged) {
-      log(`[HLT] rst=${vals.rst} — last reboot was a CRASH (not PWR/SW/SLEEP)`, "bad");
-      H._rstLogged = true;
-    }
-  }
-  // Free-heap (informational — surfaces via the link tooltip, see ticker).
-  if (vals.heap !== undefined) linkStat.heap = vals.heap;
 }
 
 // 1 Hz link ticker — packet rate, gaps, drops, latency, sparkline. Client-side
@@ -3169,9 +3342,8 @@ setInterval(() => {
   const L = linkStat;
   if (!L.lastArr) return;   // no binary packets this session (USB serial) — stay neutral
   const now = performance.now();
-  const prune = (a, ms) => { while (a.length && a[0].t < now - ms) a.shift(); };
-  prune(L.dropLog, 5000); prune(L.stallLog, 5000);
-  while (L.arrTimes.length && L.arrTimes[0] < now - 2000) L.arrTimes.shift();
+  pruneBefore(L.dropLog, now - 5000); pruneBefore(L.stallLog, now - 5000);
+  pruneArrivals(now);
   const rate = L.arrTimes.length / 2;
   const recentGaps = L.gaps.filter(g => g.t > now - 3000);
   const maxGap = recentGaps.reduce((mx, g) => Math.max(mx, g.gap), 0);
@@ -3231,18 +3403,11 @@ function resetHealth() {
   Object.assign(linkStat, { lastSeq: null, drops: 0, lastTms: null, lastArr: 0, rxWin: 0, heap: undefined });
   linkStat.arrTimes.length = 0; linkStat.gaps.length = 0; linkStat.offs.length = 0;
   linkStat.dropLog.length = 0; linkStat.stallLog.length = 0;
-  hltStat.prev = {}; hltStat.life = {}; hltStat.fhzHist.length = 0;
-  hltStat._hadWin = false; hltStat._rstLogged = false;
-  hltStat._regLogMs = {}; hltStat._rawLogMs = 0;
-  const blank = { hpLink: "link —", hpLat: "lat —", hpLoops: "loops —",
-                  hpGlitch: "glitch —", hpAge: "age —", hpDrop: "tx —", hpBoot: "rst —" };
-  for (const [id, txt] of Object.entries(blank)) {
-    const el = document.getElementById(id);
-    if (el) { el.textContent = txt; el.className = "pill"; }
-  }
-  for (const k of Object.keys(healthParts)) delete healthParts[k];
-  const hp = document.getElementById("healthPill");
-  if (hp) { hp.textContent = "sys —"; hp.className = "pill"; }
+  Object.assign(hltStat, { prev: {}, life: {}, regLogMs: {}, rawLogMs: 0, hadWin: false, rstLogged: false });
+  hltStat.fhzHist.length = 0;
+  for (const [id, blank] of Object.values(HEALTH_PILLS)) setPill(id, blank, "pill");
+  for (const part of Object.keys(healthParts)) delete healthParts[part];
+  setPill("healthPill", "sys —", "pill");
   drawLatSpark([]);
 }
 
@@ -3300,58 +3465,12 @@ async function connectFlow() {
   transport = (kind === "ble") ? new BleTransport() : new SerialTransport();
   try {
     log(`Connecting via ${kind}...`);
-    let name;
-    if (kind === "ble") {
-      // getDevices()-first (REQUIRED for macOS while the OS owns the HID link;
-      // also silent on Windows). We read the CACHE synchronously here so the
-      // requestDevice() fallback below still runs inside the click's gesture.
-      const known = _forceChooser ? null : pickKnownBle();
-      _forceChooser = false;
-      if (known) {
-        log(`Reconnecting to ${known.name || "the knob"} (no chooser)…`);
-        try {
-          // Bounded: on iOS/Bluefy gatt.connect() to a remembered peripheral
-          // that isn't advertising hangs forever (looks like a dead button).
-          name = await transport.connect(known, { timeoutMs: 6000 });
-        } catch (e) {
-          _forceChooser = true;   // next tap → chooser (synchronous, gesture-safe)
-          throw new Error("couldn't reach the knob silently (" + errMsg(e)
-            + "). Tap Connect again to pick it from the list.");
-        }
-      } else {
-        log("Opening the device chooser. On a Mac do this right after powering the knob on (before it pairs as a mouse), or Forget it in Bluetooth settings first; after one grant it reconnects silently.", "warn");
-        name = await transport.connect();   // requestDevice() — gesture still live (no await before it)
-        refreshBleGranted();                // remember the new grant for next time
-      }
-    } else {
-      name = await transport.connect();
-    }
+    // No await before connectBle()/connect(): requestDevice() must run
+    // synchronously inside the click's gesture.
+    const name = (kind === "ble") ? await connectBle(transport) : await transport.connect();
     setStatus(true, name);
     log("Connected.", "ok");
-    // Pull the live params off the knob so the sliders mirror reality
-    // instead of clobbering it with stale UI defaults.
-    if (typeof transport.readParams === "function") {
-      try {
-        const raw = await transport.readParams();
-        if (raw) {
-          applyParamsString(raw);
-          log("Loaded params from knob.", "ok");
-        } else {
-          log("Could not read params from knob (timeout).", "bad");
-        }
-      } catch (e) {
-        log("Param read failed: " + errMsg(e), "bad");
-      }
-    }
-    // Pull the NVS dump line so the detector-param controls (probe freq, Wa
-    // threshold, observer bandwidth) seed from the knob's stored values
-    // (pfl/pwa/fc_vo) instead of UI defaults. Arrives async on the event channel.
-    if (typeof transport.writeCmd === "function") {
-      try { await transport.writeCmd("Z\n"); } catch (e) { /* non-fatal */ }
-    }
-    // Presets live in the knob's NVS — pull them so the buttons match
-    // what's stored (seeding the device from the local set if it's bare).
-    await syncPresets();
+    await pullKnobState();
     await consumePendingFlash();   // a .bin dropped while offline → flash now
     return true;
   } catch (e) {
@@ -3361,11 +3480,64 @@ async function connectFlow() {
     return false;
   }
 }
+// BLE open: silent reconnect to a granted device, else the chooser. Resolves
+// with the device name.
+async function connectBle(xport) {
+  // getDevices()-first (REQUIRED for macOS while the OS owns the HID link;
+  // also silent on Windows). We read the CACHE synchronously here so the
+  // requestDevice() fallback below still runs inside the click's gesture.
+  const known = _forceChooser ? null : pickKnownBle();
+  _forceChooser = false;
+  if (known) {
+    log(`Reconnecting to ${known.name || "the knob"} (no chooser)…`);
+    try {
+      // Bounded: on iOS/Bluefy gatt.connect() to a remembered peripheral
+      // that isn't advertising hangs forever (looks like a dead button).
+      return await xport.connect(known, { timeoutMs: 6000 });
+    } catch (e) {
+      _forceChooser = true;   // next tap → chooser (synchronous, gesture-safe)
+      throw new Error("couldn't reach the knob silently (" + errMsg(e)
+        + "). Tap Connect again to pick it from the list.");
+    }
+  }
+  log("Opening the device chooser. On a Mac do this right after powering the knob on (before it pairs as a mouse), or Forget it in Bluetooth settings first; after one grant it reconnects silently.", "warn");
+  const name = await xport.connect();   // requestDevice() — gesture still live (no await before it)
+  refreshBleGranted();                  // remember the new grant for next time
+  return name;
+}
+// After a fresh connect: mirror the knob's live params, request the NVS dump
+// and sync the presets.
+async function pullKnobState() {
+  // Pull the live params off the knob so the sliders mirror reality
+  // instead of clobbering it with stale UI defaults.
+  if (typeof transport.readParams === "function") {
+    try {
+      const raw = await transport.readParams();
+      if (raw) {
+        applyParamsString(raw);
+        log("Loaded params from knob.", "ok");
+      } else {
+        log("Could not read params from knob (timeout).", "bad");
+      }
+    } catch (e) {
+      log("Param read failed: " + errMsg(e), "bad");
+    }
+  }
+  // Pull the NVS dump line so the detector-param controls (probe freq, Wa
+  // threshold, observer bandwidth) seed from the knob's stored values
+  // (pfl/pwa/fc_vo) instead of UI defaults. Arrives async on the event channel.
+  if (typeof transport.writeCmd === "function") {
+    try { await transport.writeCmd("Z\n"); } catch (e) { /* non-fatal */ }
+  }
+  // Presets live in the knob's NVS — pull them so the buttons match
+  // what's stored (seeding the device from the local set if it's bare).
+  await syncPresets();
+}
 
 btnConnect.onclick = async () => {
   // Cancel an in-flight auto-reconnect loop, or disconnect a live link.
   if (transport && (transport.isConnected()
-                    || (transport instanceof BleTransport && transport._reconnecting))) {
+                    || (transport instanceof BleTransport && transport.isReconnecting()))) {
     await transport.disconnect();
     transport = null;
     setStatus(false);
@@ -3425,7 +3597,7 @@ async function tryAutoReconnect() {
         await syncPresets();
         return true;
       } catch (e) {
-        if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
+        if (attempt < 2) await sleep(1500);
       }
     }
   }
@@ -3478,36 +3650,35 @@ document.getElementById("btnDumpNvs").onclick = async () => {
 // read may need to be re-granted per session (one OS prompt, fired
 // from the user gesture of clicking Flash).
 let _fwHandle = null;
+const FW_STORE = "files", FW_KEY = "firmware";   // IndexedDB "shortor" v1 object store / key
 
 async function _openDB() {
   return new Promise((res, rej) => {
     const req = indexedDB.open("shortor", 1);
-    req.onupgradeneeded = () => req.result.createObjectStore("files");
+    req.onupgradeneeded = () => req.result.createObjectStore(FW_STORE);
     req.onsuccess = () => res(req.result);
     req.onerror   = () => rej(req.error);
   });
 }
-async function _loadFwHandle() {
+// One request in its own firmware-store transaction: act(store) issues it.
+// Resolves with the request's result once it succeeds — or, with commit, once
+// the transaction has committed — and with null on any failure (non-fatal).
+async function _fwStoreRequest(mode, act, commit = false) {
   try {
     const db = await _openDB();
     return await new Promise((res, rej) => {
-      const tx  = db.transaction("files", "readonly");
-      const req = tx.objectStore("files").get("firmware");
-      req.onsuccess = () => res(req.result || null);
-      req.onerror   = () => rej(req.error);
+      const tx  = db.transaction(FW_STORE, mode);
+      const req = act(tx.objectStore(FW_STORE));
+      if (commit) { tx.oncomplete  = () => res(req.result); tx.onerror  = () => rej(tx.error); }
+      else        { req.onsuccess  = () => res(req.result); req.onerror = () => rej(req.error); }
     });
   } catch (e) { return null; }
 }
+async function _loadFwHandle() {
+  return (await _fwStoreRequest("readonly", store => store.get(FW_KEY))) || null;
+}
 async function _saveFwHandle(handle) {
-  try {
-    const db = await _openDB();
-    await new Promise((res, rej) => {
-      const tx = db.transaction("files", "readwrite");
-      tx.objectStore("files").put(handle, "firmware");
-      tx.oncomplete = () => res();
-      tx.onerror    = () => rej(tx.error);
-    });
-  } catch (e) { /* non-fatal */ }
+  await _fwStoreRequest("readwrite", store => store.put(handle, FW_KEY), true);
 }
 async function _fileFromHandle(handle) {
   if (!handle) return null;
@@ -3571,90 +3742,35 @@ async function flashFirmware(file) {
 
   // Send Y so the chip reboots into WiFi mode, then drop the transport.
   const wasBle = transport instanceof BleTransport;
-  if (transport && transport.isConnected()) {
-    try {
-      await transport.writeCmd("Y\n");
-      log("Sent Y — knob rebooting into WiFi mode.");
-    } catch (e) { log("Y send failed: " + errMsg(e), "bad"); }
-    await transport.disconnect();
-  }
+  await rebootKnobIntoOta();
   // The BLE link is intentionally down for the WiFi upload (and the chip is
   // rebooting), so reflect Disconnected — otherwise the header keeps claiming
   // "Connected" right through the flash. We try to reconnect once it's back.
   transport = null;
   setStatus(false);
 
-  // Show the non-blocking "switch to Shortor-OTA WiFi" dim overlay.
-  // Clicks fall through (pointer-events: none) so nothing is actually
-  // disabled — it's just a strong visual cue that the user's next
-  // action is OS-level, not in the app. The overlay clears the moment
-  // /ota-prep answers (proves the WiFi switch happened).
-  const banner   = document.getElementById("otaBanner");
-  const statusEl = document.getElementById("otaStatus");
-  const statusTx = document.getElementById("otaStatusText");
-  const titleEl  = document.getElementById("otaTitle");
-  // Adaptive guidance: STA (creds saved → the knob joins your network and we
-  // never switch WiFi) vs the SoftAP walkthrough.
-  const staSsid = (() => { try { return localStorage.getItem(WIFI_SSID_LS); } catch (e) { return null; } })();
-  const staEl = document.getElementById("otaSta"), softEl = document.getElementById("otaSoftap");
-  if (staEl)  staEl.hidden  = !wifiStaConfigured;
-  if (softEl) softEl.hidden = wifiStaConfigured;
-  if (titleEl) titleEl.textContent = wifiStaConfigured ? "Flashing over your Wi-Fi" : "Switch to the knob's WiFi";
-  const ssidLbl = document.getElementById("otaStaSsid");
-  if (ssidLbl && staSsid) ssidLbl.textContent = `“${staSsid}”`;
-  if (statusEl) statusEl.classList.remove("connected");
-  if (banner) banner.classList.add("show");
-
-  // Live "waiting" counter so the overlay visibly ticks (reassures the user
-  // it's actively probing, not hung).
-  const waitMsg = wifiStaConfigured
-    ? "Waiting for the knob on your Wi-Fi (shortor.local)…"
-    : "Waiting for you to join Shortor-OTA…";
-  const waitT0 = performance.now();
-  const waitTimer = setInterval(() => {
-    if (!statusTx) return;
-    const s = Math.round((performance.now() - waitT0) / 1000);
-    statusTx.textContent = `${waitMsg} ${s}s`;
-  }, 1000);
+  const ota = showOtaOverlay();
+  const waitTimer = startOtaWaitTicker(ota.statusTx);
 
   // Brief settle before we start hammering /ota-prep. The chip's restart +
   // WiFi/SoftAP bring-up is in the 700–1000 ms range; this just avoids burning
   // wasted polls during the bootloader phase.
-  await new Promise(r => setTimeout(r, 400));
+  await sleep(400);
 
   log(wifiStaConfigured
     ? "→ Knob is joining your Wi-Fi — stay on your network. Flash starts once it answers at shortor.local."
     : "→ Join 'Shortor-OTA' WiFi (open, no password). If it sits on 'waiting', toggle WiFi off/on to force-detect.", "warn");
 
-  // Dual-host race: probe shortor.local (STA) and the SoftAP IP in parallel each
-  // round; whichever /ota-prep answers first becomes the upload host. Covers
-  // both modes (and mDNS not resolving) without the UI needing to know which.
-  const candidates = [...new Set(["shortor.local", host].filter(Boolean))];
-  log(`Looking for the knob at ${candidates.map(h => `http://${h}/`).join("  ·  ")} …`, "warn");
-  const probe = async (h) => {
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 700);
-      const resp = await fetch(`http://${h}/ota-prep`, { mode: "cors", cache: "no-store", signal: ctrl.signal });
-      clearTimeout(t);
-      return resp.ok ? h : null;
-    } catch (e) { return null; }
-  };
-  let liveHost = null;
-  for (let i = 0; i < 120 && !liveHost; i++) {
-    const hits = await Promise.all(candidates.map(probe));
-    liveHost = hits.find(Boolean) || null;
-    if (!liveHost) await new Promise(r => setTimeout(r, 250));
-  }
+  const liveHost = await findOtaHost(host);
   clearInterval(waitTimer);
   // Flip the overlay to a green "connected" beat so the path is visibly
   // acknowledged before the dim clears and the upload begins.
-  if (liveHost && statusEl && statusTx) {
-    statusEl.classList.add("connected");
-    statusTx.textContent = `Connected via ${liveHost} — flashing now!`;
-    await new Promise(r => setTimeout(r, 650));
+  if (liveHost && ota.statusEl && ota.statusTx) {
+    ota.statusEl.classList.add("connected");
+    ota.statusTx.textContent = `Connected via ${liveHost} — flashing now!`;
+    await sleep(650);
   }
-  if (banner) banner.classList.remove("show");
+  if (ota.banner) ota.banner.classList.remove("show");
   if (!liveHost) {
     log("Knob HTTP never came up — wrong network? Aborting.", "bad");
     prog.style.display = "none";
@@ -3668,18 +3784,7 @@ async function flashFirmware(file) {
   log(`Uploading ${file.name} (${file.size} bytes) → http://${liveHost}/firmware ...`);
   const t0 = performance.now();
   try {
-    const fd = new FormData(); fd.append("firmware", file, file.name);
-    await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `http://${liveHost}/firmware`);
-      xhr.upload.onprogress = e => {
-        if (e.lengthComputable) prog.value = e.loaded / e.total;
-      };
-      xhr.onload = () => xhr.status >= 200 && xhr.status < 300
-        ? resolve() : reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
-      xhr.onerror = () => reject(new Error("network error"));
-      xhr.send(fd);
-    });
+    await uploadFirmware(liveHost, file, prog);
     const dt = (performance.now() - t0) / 1000;
     log(`Flash OK in ${dt.toFixed(1)}s — knob is rebooting.`, "ok");
     showFlashResult(true, `Flashed ${file.name} in ${dt.toFixed(1)} s. The knob is rebooting — reconnecting automatically, or click Connect.`);
@@ -3687,15 +3792,7 @@ async function flashFirmware(file) {
     // back, try to reconnect automatically; if that's not possible (serial,
     // no getDevices(), or it isn't advertising yet) the UI stays Disconnected
     // so the user knows to click Connect. BLE-only — serial needs a gesture.
-    if (wasBle) {
-      setTimeout(() => {
-        if (transport) return;   // already reconnected (manually or otherwise)
-        log("Reconnecting to the knob after flash…", "warn");
-        tryAutoReconnect().then(ok => {
-          if (!ok) log("Couldn't auto-reconnect — click Connect once the knob is back.", "warn");
-        }).catch(() => {});
-      }, 6000);
-    }
+    if (wasBle) scheduleReconnectAfterFlash();
   } catch (e) {
     log("Flash failed: " + errMsg(e), "bad");
     showFlashResult(false, `Couldn't flash ${file.name}: ${errMsg(e)}`);
@@ -3703,6 +3800,100 @@ async function flashFirmware(file) {
     prog.style.display = "none";
     flashInFlight = false;
   }
+}
+// Y over the live link → the chip reboots into WiFi mode; then drop the link.
+async function rebootKnobIntoOta() {
+  if (!transport || !transport.isConnected()) return;
+  try {
+    await transport.writeCmd("Y\n");
+    log("Sent Y — knob rebooting into WiFi mode.");
+  } catch (e) { log("Y send failed: " + errMsg(e), "bad"); }
+  await transport.disconnect();
+}
+// Show the non-blocking "switch to Shortor-OTA WiFi" dim overlay.
+// Clicks fall through (pointer-events: none) so nothing is actually
+// disabled — it's just a strong visual cue that the user's next
+// action is OS-level, not in the app. The overlay clears the moment
+// /ota-prep answers (proves the WiFi switch happened).
+function showOtaOverlay() {
+  const banner      = document.getElementById("otaBanner");
+  const otaStatusEl = document.getElementById("otaStatus");
+  const statusTx    = document.getElementById("otaStatusText");
+  const titleEl     = document.getElementById("otaTitle");
+  // Adaptive guidance: STA (creds saved → the knob joins your network and we
+  // never switch WiFi) vs the SoftAP walkthrough.
+  const staSsid = (() => { try { return localStorage.getItem(WIFI_SSID_LS); } catch (e) { return null; } })();
+  const staEl = document.getElementById("otaSta"), softEl = document.getElementById("otaSoftap");
+  if (staEl)  staEl.hidden  = !wifiStaConfigured;
+  if (softEl) softEl.hidden = wifiStaConfigured;
+  if (titleEl) titleEl.textContent = wifiStaConfigured ? "Flashing over your Wi-Fi" : "Switch to the knob's WiFi";
+  const ssidLbl = document.getElementById("otaStaSsid");
+  if (ssidLbl && staSsid) ssidLbl.textContent = `“${staSsid}”`;
+  if (otaStatusEl) otaStatusEl.classList.remove("connected");
+  if (banner) banner.classList.add("show");
+  return { banner, statusEl: otaStatusEl, statusTx };
+}
+// Live "waiting" counter so the overlay visibly ticks (reassures the user
+// it's actively probing, not hung). Returns the interval id.
+function startOtaWaitTicker(statusTx) {
+  const waitMsg = wifiStaConfigured
+    ? "Waiting for the knob on your Wi-Fi (shortor.local)…"
+    : "Waiting for you to join Shortor-OTA…";
+  const waitT0 = performance.now();
+  return setInterval(() => {
+    if (!statusTx) return;
+    const s = Math.round((performance.now() - waitT0) / 1000);
+    statusTx.textContent = `${waitMsg} ${s}s`;
+  }, 1000);
+}
+// Dual-host race: probe shortor.local (STA) and the SoftAP IP in parallel each
+// round; whichever /ota-prep answers first becomes the upload host. Covers
+// both modes (and mDNS not resolving) without the UI needing to know which.
+// Resolves with the live host, or null after ~120 rounds.
+async function findOtaHost(host) {
+  const candidates = [...new Set(["shortor.local", host].filter(Boolean))];
+  log(`Looking for the knob at ${candidates.map(h => `http://${h}/`).join("  ·  ")} …`, "warn");
+  for (let i = 0; i < 120; i++) {
+    const hits = await Promise.all(candidates.map(probeOtaHost));
+    const live = hits.find(Boolean);
+    if (live) return live;
+    await sleep(250);
+  }
+  return null;
+}
+// One /ota-prep probe (700 ms cap) → the host if it answered OK, else null.
+async function probeOtaHost(h) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 700);
+    const resp = await fetch(`http://${h}/ota-prep`, { mode: "cors", cache: "no-store", signal: ctrl.signal });
+    clearTimeout(t);
+    return resp.ok ? h : null;
+  } catch (e) { return null; }
+}
+// POST the .bin to http://<host>/firmware, driving the progress bar.
+function uploadFirmware(host, file, prog) {
+  const fd = new FormData(); fd.append("firmware", file, file.name);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `http://${host}/firmware`);
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable) prog.value = e.loaded / e.total;
+    };
+    xhr.onload = () => xhr.status >= 200 && xhr.status < 300
+      ? resolve() : reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.send(fd);
+  });
+}
+function scheduleReconnectAfterFlash() {
+  setTimeout(() => {
+    if (transport) return;   // already reconnected (manually or otherwise)
+    log("Reconnecting to the knob after flash…", "warn");
+    tryAutoReconnect().then(ok => {
+      if (!ok) log("Couldn't auto-reconnect — click Connect once the knob is back.", "warn");
+    }).catch(() => {});
+  }, 6000);
 }
 
 // ─── Wi-Fi STA creds for OTA ─────────────────────────────────────────────────
@@ -3837,7 +4028,7 @@ async function consumePendingFlash() {
 async function rememberFromHandle(handleP, file) {
   let handle = null;
   try { handle = handleP ? await handleP : null; } catch (e) { handle = null; }
-  if (handle && handle.kind === "file" && /\.bin$/i.test(handle.name)) {
+  if (isBinFileHandle(handle)) {
     _fwHandle = handle; _saveFwHandle(handle); _setFwLabel(handle.name, true);
   } else {
     _setFwLabel(file.name, false);
@@ -3860,8 +4051,9 @@ function grabBinHandle(items) {
   }
   if (!tasks.length) return Promise.resolve(null);
   return Promise.all(tasks)
-    .then(hs => hs.find(h => h && h.kind === "file" && /\.bin$/i.test(h.name)) || null);
+    .then(hs => hs.find(isBinFileHandle) || null);
 }
+function isBinFileHandle(h) { return !!(h && h.kind === "file" && /\.bin$/i.test(h.name)); }
 // Route an incoming .bin. NOTE: when disconnected this calls connectFlow()
 // which opens the BLE chooser — so callers must reach here with the user
 // gesture still live (no awaited work in between).
@@ -3938,16 +4130,14 @@ const sliderValueEls  = {};
 const paramState      = Object.fromEntries(PARAMS.map(p => [p.key, p.def]));
 
 for (const p of PARAMS) {
-  const row = document.createElement("div"); row.className = "slider-row";
-  const lbl = document.createElement("label"); lbl.textContent = p.label;
-  const val = document.createElement("span"); val.className = "value";
+  const { row, val } = makeSliderRow(p.label);
   const sld = document.createElement("input");
   sld.type = "range"; sld.min = p.min; sld.max = p.max; sld.step = p.step;
   // Slider position is in slider-space (linear 0..100 for log-scaled
   // params); paramState always stores the actual value (Hz, V, …).
   // lpfSliderOf/lpfValueOf are identity for non-log params.
   sld.value = lpfSliderOf(p, paramState[p.key]);
-  row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
+  row.appendChild(sld);
   slidersEl.appendChild(row);
   sliderEls[p.key] = sld; sliderValueEls[p.key] = val;
   val.textContent = p.fmt(lpfValueOf(p, parseFloat(sld.value)));
@@ -3966,6 +4156,11 @@ function setMomentumSlidersDisabled(off) {
   if (sliderEls.j_virt)   sliderEls.j_virt.disabled   = off;
   if (sliderEls.b_couple) sliderEls.b_couple.disabled = off;
 }
+// Tick/untick the momentum checkbox (no send) and gate its sliders to match.
+function setMomentumOn(on) {
+  momentumChk.checked = on;
+  setMomentumSlidersDisabled(!on);
+}
 momentumChk.addEventListener("change", () => {
   pendingSends["b_couple"] = effectiveBCouple();
   setMomentumSlidersDisabled(!momentumChk.checked);
@@ -3983,9 +4178,9 @@ function onParamChange(p, value) {
 // Seed the velocity-LPF slider (CO) from a wire value without re-sending.
 // Log-scaled, so the slider's value is slider-space — convert via lpfSliderOf.
 function syncObsBw(hz) {
-  if (hz == null || Number.isNaN(hz)) return;
+  if (isMissing(hz)) return;
   const key = "fc_vel_obs_hap";
-  const p = PARAMS.find(x => x.key === key);
+  const p = PARAM_BY_KEY[key];
   paramState[key] = hz;
   const sld = sliderEls[key];
   if (sld && document.activeElement !== sld) sld.value = p ? lpfSliderOf(p, hz) : hz;
@@ -4050,84 +4245,96 @@ const tunDecimals = (step) => step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
 const tunFmt = (v, m) => `${v.toFixed(tunDecimals(m.step))}${m.unit ? " " + m.unit : ""}`;
 const tunState = {};   // name → value (UI-authoritative; write-through)
 const tunEls   = {};   // name → { input, valEl, meta }
+// UI-side edit of a live-tunable: record it (UI-authoritative) and queue
+// `Cu <name>=<value>` through the send pump. Shared by the registry rows and
+// every bespoke tunable control.
+function queueTun(name, v) {
+  tunState[name] = v;
+  pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
+}
 function setTunParam(name, val) {
   if (Number.isNaN(val)) return;
   tunState[name] = val;
   // Bespoke-control params (acarm, ak0..ak3) are tracked but get no generic row;
   // forward the wire value to their dedicated handler in the Acrobot card.
-  if (TUN_HIDDEN.has(name)) {
-    if (name === "acarm") syncAcroArm(val);
-    else if (name === "acsw") syncAcroSwing(val);
-    else if (name === "actgt") syncAcroTarget(val);
-    else if (/^ak[0-3]$/.test(name) || name === "acpump") syncAcroGain(name, val);
-    else if (name === "acxa" || name === "acxs") syncSidParam(name, val);
-    return;
-  }
-  let rec = tunEls[name];
-  if (!rec) {
-    const wrap = document.getElementById("tunRegistry");
-    if (!wrap) return;
-    const meta = TUN_META[name] || null;
-    const row = document.createElement("div"); row.className = "slider-row";
-    const lbl = document.createElement("label");
-    lbl.textContent = meta ? meta.label : (TUN_LABELS[name] || name);
-    lbl.title = name + (meta && meta.unit ? ` — ${meta.unit}` : "");
-    const valEl = document.createElement("span"); valEl.className = "value";
-    row.appendChild(lbl); row.appendChild(valEl);
-    let input;
-    if (TUN_BOOL.has(name)) {
-      // boolean tunable → toggle that sends 1/0
-      input = document.createElement("input");
-      input.type = "checkbox"; input.checked = (val != 0);
-      valEl.appendChild(input);
-      input.addEventListener("change", () => {
-        const v = input.checked ? 1 : 0;
-        tunState[name] = v;
-        pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
-      });
-    } else if (meta) {
-      input = document.createElement("input");
-      input.type = "range"; input.min = meta.min;
-      input.max = Math.max(meta.max, val);   // expand to fit an out-of-range value
-      input.step = meta.step; input.value = val;
-      row.appendChild(input);
-      valEl.textContent = tunFmt(val, meta);
-      input.addEventListener("input", () => {
-        const v = parseFloat(input.value);
-        tunState[name] = v;
-        valEl.textContent = tunFmt(v, meta);
-        pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
-      });
-    } else {
-      input = document.createElement("input");
-      input.type = "number"; input.step = "any";
-      input.style.width = "7ch"; input.style.textAlign = "right";
-      input.value = val;
-      valEl.appendChild(input);
-      input.addEventListener("change", () => {
-        const v = parseFloat(input.value);
-        if (!isFinite(v)) { input.value = tunState[name]; return; }
-        tunState[name] = v;
-        pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
-      });
-    }
-    input.id = `tun_${name}`;
-    wrap.appendChild(row);
-    tunEls[name] = rec = { input, valEl, meta };
-    const hint = document.getElementById("tunHint");
-    if (hint) hint.textContent = "Changes apply live; Save to knob (Tune) to persist.";
-  }
+  if (TUN_HIDDEN.has(name)) { syncBespokeTun(name, val); return; }
+  const rec = tunEls[name] || buildTunRow(name, val);
+  if (!rec) return;
   // Sync from the wire unless the user is actively dragging/typing this control.
-  if (document.activeElement !== rec.input) {
-    if (rec.input.type === "checkbox") {
-      rec.input.checked = (val != 0);
-    } else if (rec.meta) {
-      if (val > parseFloat(rec.input.max)) rec.input.max = val;
-      rec.input.value = val;
-      rec.valEl.textContent = tunFmt(val, rec.meta);
-    } else {
-      rec.input.value = val;
-    }
+  if (document.activeElement !== rec.input) syncTunControl(rec, val);
+}
+function syncBespokeTun(name, val) {
+  if (name === "acarm") syncAcroArm(val);
+  else if (name === "acsw") syncAcroSwing(val);
+  else if (name === "actgt") syncAcroTarget(val);
+  else if (/^ak[0-3]$/.test(name) || name === "acpump") syncAcroGain(name, val);
+  else if (name === "acxa" || name === "acxs") syncSidParam(name, val);
+}
+// First sighting of a registry param → its generic row: a toggle (TUN_BOOL),
+// a ranged slider (TUN_META) or a free number input. Null without the panel.
+function buildTunRow(name, val) {
+  const wrap = document.getElementById("tunRegistry");
+  if (!wrap) return null;
+  const meta = TUN_META[name] || null;
+  const { row, lbl, val: valEl } = makeSliderRow(meta ? meta.label : (TUN_LABELS[name] || name));
+  lbl.title = name + (meta && meta.unit ? ` — ${meta.unit}` : "");
+  const input = TUN_BOOL.has(name) ? makeTunToggle(name, val, valEl)
+              : meta               ? makeTunSlider(name, val, meta, row, valEl)
+              :                      makeTunNumber(name, val, valEl);
+  input.id = `tun_${name}`;
+  wrap.appendChild(row);
+  const rec = tunEls[name] = { input, valEl, meta };
+  setText("tunHint", "Changes apply live; Save to knob (Tune) to persist.");
+  return rec;
+}
+// A registry control: an <input> of the given type appended to host that,
+// on `event`, queues read(input) — unless read returns null (rejected edit).
+function makeTunInput(name, type, host, event, read) {
+  const input = document.createElement("input");
+  input.type = type;
+  host.appendChild(input);
+  input.addEventListener(event, () => { const v = read(input); if (v !== null) queueTun(name, v); });
+  return input;
+}
+// boolean tunable → toggle that sends 1/0
+function makeTunToggle(name, val, valEl) {
+  const input = makeTunInput(name, "checkbox", valEl, "change", el => el.checked ? 1 : 0);
+  input.checked = (val != 0);
+  return input;
+}
+function makeTunSlider(name, val, meta, row, valEl) {
+  const input = makeTunInput(name, "range", row, "input", el => {
+    const v = parseFloat(el.value);
+    valEl.textContent = tunFmt(v, meta);
+    return v;
+  });
+  input.min = meta.min;
+  input.max = Math.max(meta.max, val);   // expand to fit an out-of-range value
+  input.step = meta.step; input.value = val;
+  valEl.textContent = tunFmt(val, meta);
+  return input;
+}
+function makeTunNumber(name, val, valEl) {
+  const input = makeTunInput(name, "number", valEl, "change", el => {
+    const v = parseFloat(el.value);
+    if (!isFinite(v)) { el.value = tunState[name]; return null; }
+    return v;
+  });
+  input.step = "any";
+  input.style.width = "7ch"; input.style.textAlign = "right";
+  input.value = val;
+  return input;
+}
+// Wire value → an existing registry control (range max grows to fit).
+function syncTunControl(rec, val) {
+  if (rec.input.type === "checkbox") {
+    rec.input.checked = (val != 0);
+  } else if (rec.meta) {
+    if (val > parseFloat(rec.input.max)) rec.input.max = val;
+    rec.input.value = val;
+    rec.valEl.textContent = tunFmt(val, rec.meta);
+  } else {
+    rec.input.value = val;
   }
 }
 // "[TUN] rthr=0.65 tfs=150.0 …"  (full dump from Z)  OR  "[TUN] rthr=0.7 set" (echo)
@@ -4164,7 +4371,7 @@ setInterval(async () => {
         // Plain-coded LQR-card param (LPF cutoffs).
         line = `C${val.code}${val.val}\n`;
       } else {
-        const p = PARAMS.find(x => x.key === key);
+        const p = PARAM_BY_KEY[key];
         if (p) line = `C${p.code}${val}\n`;
       }
       if (!line) continue;
@@ -4188,13 +4395,21 @@ const PARAM_TOKEN = {   // UI param key → token in the params/Q blob
   k_x: "k0", k_xv: "k1", k_th: "k2", k_thd: "k3", x_ref: "xref",
   fc_shaft_vel: "fcV", fc_tilt: "fcT",
 };
-function parseBlobValues(raw) {
-  const out = {};
+const TOKEN_PARAM = Object.fromEntries(Object.entries(PARAM_TOKEN).map(([key, tok]) => [tok, key]));
+// "k=v k=v …" params/Q blob → [token, valueString] pairs (keyless parts skipped).
+function blobPairs(raw) {
+  const pairs = [];
   for (const part of raw.trim().split(/\s+/)) {
     const eq = part.indexOf("=");
-    if (eq <= 0) continue;
-    const v = parseFloat(part.slice(eq + 1));
-    if (!Number.isNaN(v)) out[part.slice(0, eq)] = v;
+    if (eq > 0) pairs.push([part.slice(0, eq), part.slice(eq + 1)]);
+  }
+  return pairs;
+}
+function parseBlobValues(raw) {
+  const out = {};
+  for (const [tok, valStr] of blobPairs(raw)) {
+    const v = parseFloat(valStr);
+    if (!Number.isNaN(v)) out[tok] = v;
   }
   return out;
 }
@@ -4214,25 +4429,10 @@ async function verifyGains() {
     const raw = await transport.readParams();
     if (!raw) return;
     const rv = parseBlobValues(raw);
-    let fixed = 0;
-    for (const p of PARAMS) {
-      const tok = PARAM_TOKEN[p.key];
-      if (!tok || !(tok in rv)) continue;
-      const uiVal = (p.key === "b_couple") ? effectiveBCouple() : paramState[p.key];
-      if (!gainMatches(rv[tok], uiVal)) { pendingSends[p.key] = uiVal; fixed++; }
-    }
-    for (const p of LQR_PARAMS) {
-      const tok = PARAM_TOKEN[p.key];
-      if (!tok || !(tok in rv)) continue;
-      if (p.key === "x_ref") {
-        const uiRad = -lqrState.x_ref / WHEEL_RADIUS_MM;   // UI mm → firmware rad
-        if (!gainMatches(rv[tok], uiRad)) { pendingSends["__lqr_x"] = { kind: "x", val: lqrState.x_ref }; fixed++; }
-      } else if (typeof p.idx === "number") {
-        if (!gainMatches(rv[tok], lqrState[p.key])) { pendingSends["__lqr_" + p.idx] = { kind: "g", idx: p.idx, val: lqrState[p.key] }; fixed++; }
-      } else if (p.code) {
-        if (!gainMatches(rv[tok], lqrState[p.key])) { pendingSends["__lqr_" + p.code] = { kind: "C", code: p.code, val: lqrState[p.key] }; fixed++; }
-      }
-    }
+    const fixed =
+      requeueDrifted(rv, PARAMS, p => (p.key === "b_couple") ? effectiveBCouple() : paramState[p.key],
+                     (p, v) => { pendingSends[p.key] = v; return true; })
+      + requeueDrifted(rv, LQR_PARAMS, p => lqrState[p.key], queueLqrSend);
     if (fixed) log(`Gain check: knob had drifted on ${fixed} value(s) — re-sent.`, "warn");
   } catch (e) {
     /* read failed (timeout / mid-reconnect) — try again next cycle */
@@ -4240,6 +4440,21 @@ async function verifyGains() {
     verifyBusy = false;
   }
 }
+// Re-queue each param whose knob value (rv: token → value) drifted from the
+// UI's: uiValueOf(p) is the value the UI wants, queue(p, v) re-sends it (and
+// returns whether it did). Returns how many were re-queued.
+function requeueDrifted(rv, params, uiValueOf, queue) {
+  let fixed = 0;
+  for (const p of params) {
+    const tok = PARAM_TOKEN[p.key];
+    if (!tok || !(tok in rv)) continue;
+    const v = uiValueOf(p);
+    if (!gainMatches(rv[tok], inKnobUnits(p, v)) && queue(p, v)) fixed++;
+  }
+  return fixed;
+}
+// The knob reports the setpoint in shaft rad, sign-flipped (UI mm → firmware rad).
+const inKnobUnits = (p, v) => (p.key === "x_ref") ? -v / WHEEL_RADIUS_MM : v;
 setInterval(() => { verifyGains().catch(() => {}); }, 5000);
 
 // ─── Balancer sliders + calibration ─────────────────────────────────────────
@@ -4253,15 +4468,13 @@ const lqrState       = Object.fromEntries(LQR_PARAMS.map(p => [p.key, p.def]));
 const balanceState   = { upCalSet: false, flatCalSet: false, tiltAxisRot: 0 };
 
 for (const p of LQR_PARAMS) {
-  const row = document.createElement("div"); row.className = "slider-row";
-  const lbl = document.createElement("label"); lbl.textContent = p.label;
-  const val = document.createElement("span"); val.className = "value";
+  const { row, val } = makeSliderRow(p.label);
   const sld = document.createElement("input");
   sld.type = "range"; sld.min = p.min; sld.max = p.max; sld.step = p.step;
   // Slider position is in slider-space (linear 0..100 for log params);
   // lqrState always stores the actual value (Hz, rad/s, …).
   sld.value = lpfSliderOf(p, lqrState[p.key]);
-  row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
+  row.appendChild(sld);
   ((p.key === "x_ref" && dashSetpointEl) ? dashSetpointEl : lqrSlidersEl).appendChild(row);
   lqrSliderEls[p.key] = sld; lqrValueEls[p.key] = val;
   val.textContent = p.fmt(lpfValueOf(p, parseFloat(sld.value)));
@@ -4269,12 +4482,18 @@ for (const p of LQR_PARAMS) {
     const v = lpfValueOf(p, parseFloat(sld.value));
     lqrState[p.key] = v;
     val.textContent = p.fmt(v);
-    // Cg<i><f> for indexed LQR gains, Cx<f> for the position setpoint
-    // (mm→rad + sign flip), C<code><f> for plain-coded params (LPF cutoffs).
-    if (typeof p.idx === "number") pendingSends["__lqr_" + p.idx]   = { kind: "g", idx: p.idx, val: v };
-    else if (p.code === "x")       pendingSends["__lqr_x"]          = { kind: "x", val: v };
-    else if (p.code)               pendingSends["__lqr_" + p.code]  = { kind: "C", code: p.code, val: v };
+    queueLqrSend(p, v);
   });
+}
+// Queue an LQR-card value for the send pump: Cg<i><f> for indexed LQR gains,
+// Cx<f> for the position setpoint (mm→rad + sign flip), C<code><f> for
+// plain-coded params (LPF cutoffs). False for a param with neither idx nor code.
+function queueLqrSend(p, v) {
+  if (typeof p.idx === "number") pendingSends["__lqr_" + p.idx]   = { kind: "g", idx: p.idx, val: v };
+  else if (p.code === "x")       pendingSends["__lqr_x"]          = { kind: "x", val: v };
+  else if (p.code)               pendingSends["__lqr_" + p.code]  = { kind: "C", code: p.code, val: v };
+  else return false;
+  return true;
 }
 
 // Detector-param controls (rev 2): CP<hz> probe freq, Cw<g/V> Wa threshold.
@@ -4296,8 +4515,7 @@ for (const p of LQR_PARAMS) {
     const v = Math.round(parseFloat(wt.value) * 1000) / 1000;
     if (!isFinite(v)) return;
     cfgWaThr = v;
-    const lbl = document.getElementById("cfgWaThrVal");
-    if (lbl) lbl.textContent = `${v.toFixed(2)} g/V`;
+    showWaThreshold(v);
     pendingSends["__cfg_w"] = { kind: "C", code: "w", val: v };
   });
 })();
@@ -4420,14 +4638,11 @@ function applyPreset(name) {
   // effectiveBCouple(). Conversely a b_couple==0 preset un-ticks.
   if ("b_couple" in vals) {
     const wantOn = vals.b_couple > 1e-6;
-    if (momentumChk.checked !== wantOn) {
-      momentumChk.checked = wantOn;
-      setMomentumSlidersDisabled(!wantOn);
-    }
+    if (momentumChk.checked !== wantOn) setMomentumOn(wantOn);
   }
   for (const [k, v] of Object.entries(vals)) {
     if (sliderEls[k]) {
-      const p = PARAMS.find(x => x.key === k);
+      const p = PARAM_BY_KEY[k];
       sliderEls[k].value = lpfSliderOf(p, v);
       onParamChange(p, v);
     }
@@ -4451,9 +4666,7 @@ renderPresets();
 // incl. the momentum coupling) so applying the preset later restores the
 // complete feel — not just the few fields the factory presets carried.
 function currentHapticSnapshot() {
-  const snap = {};
-  for (const p of PARAMS) snap[p.key] = paramState[p.key];
-  return snap;
+  return Object.fromEntries(PARAMS.map(p => [p.key, paramState[p.key]]));
 }
 async function pushPresetsToDevice() {
   if (!transport) return;
@@ -4536,19 +4749,20 @@ function drawProfile() {
   const period = (2 * Math.PI) / N;
   const xSpan  = 3 * period;
   const xMin   = -xSpan / 2;
-  const yMax   = PARAMS.find(p => p.key === "detent_k").max;
+  const yMax   = PARAM_BY_KEY.detent_k.max;
   const mid    = h / 2;
+  const X = theta => ((theta - xMin) / xSpan) * w;           // shaft angle → px
+  const Y = torque => mid - (torque / yMax) * (h / 2 - 8);   // torque (V) → px
+  const vline = (x, y0, y1) => { ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); };
 
   // Background grid: zero-torque axis, detent centers (blue), boundaries (red).
   ctx.strokeStyle = "#223137"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
   ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
   for (const k of [-1, 0, 1]) {
-    const x = ((k * period - xMin) / xSpan) * w;
     ctx.strokeStyle = "#ffb454";  // center
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-    const xb = ((k * period + period / 2 - xMin) / xSpan) * w;
+    vline(X(k * period), 0, h);
     ctx.strokeStyle = "#5e2a26";  // boundary
-    ctx.beginPath(); ctx.moveTo(xb, 0); ctx.lineTo(xb, h); ctx.stroke();
+    vline(X(k * period + period / 2), 0, h);
   }
   ctx.setLineDash([]);
 
@@ -4561,9 +4775,7 @@ function drawProfile() {
   for (let i = 0; i <= samples; i++) {
     const theta = xMin + (i / samples) * xSpan;
     const slot  = Math.round(theta / period);
-    const t = detentTorque(theta, N, A, K);
-    const x = ((theta - xMin) / xSpan) * w;
-    const y = mid - (t / yMax) * (h / 2 - 8);
+    const x = X(theta), y = Y(detentTorque(theta, N, A, K));
     if (prevSlot === null || slot !== prevSlot) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
     prevSlot = slot;
@@ -4573,12 +4785,7 @@ function drawProfile() {
   // Snap-discontinuity markers (faint vertical dashes at ±K at each boundary).
   ctx.strokeStyle = "#b5803a"; ctx.setLineDash([1, 3]);
   ctx.lineWidth = 1 * devicePixelRatio;
-  for (const k of [-1, 0, 1]) {
-    const xb = ((k * period + period / 2 - xMin) / xSpan) * w;
-    const yTop = mid - (K / yMax) * (h / 2 - 8);
-    const yBot = mid + (K / yMax) * (h / 2 - 8);
-    ctx.beginPath(); ctx.moveTo(xb, yTop); ctx.lineTo(xb, yBot); ctx.stroke();
-  }
+  for (const k of [-1, 0, 1]) vline(X(k * period + period / 2), Y(K), Y(-K));
   ctx.setLineDash([]);
 
   ctx.fillStyle = "#7f908d"; ctx.font = `${10 * devicePixelRatio}px 'IBM Plex Mono', monospace`;
@@ -4661,10 +4868,7 @@ function onLiveAngle(angle) {
 }
 
 function drawRing() {
-  const ctx = ringCanvas.getContext("2d");
-  const dpr = devicePixelRatio || 1;
-  const W = ringCanvas.width  = ringCanvas.clientWidth  * dpr;
-  const H = ringCanvas.height = ringCanvas.clientHeight * dpr;
+  const { ctx, w: W, h: H, dpr } = fitCanvas(ringCanvas);
   const cx = W / 2, cy = H / 2;
   const r  = Math.min(W, H) / 2 - 24 * dpr;
   ctx.fillStyle = "#080d0f"; ctx.fillRect(0, 0, W, H);
@@ -4682,8 +4886,20 @@ function drawRing() {
   ctx.strokeStyle = "#223137"; ctx.lineWidth = 2 * dpr;
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
 
-  // Tick marks — match the knob's configured detents/rev. Above ~120
-  // the ticks become unreadable so render in faint bands of dots.
+  drawRingTicks(ctx, cx, cy, r, dpr);
+
+  // Tick counter in the center.
+  ctx.fillStyle = "#e2ece9";
+  ctx.font = `${36 * dpr}px 'IBM Plex Mono', monospace`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(String(ringTicks), cx, cy - 6 * dpr);
+  ctx.fillStyle = "#7f908d";
+  ctx.font = `${11 * dpr}px 'IBM Plex Mono', monospace`;
+  ctx.fillText("scroll ticks", cx, cy + 20 * dpr);
+}
+// Tick marks — match the knob's configured detents/rev. Above ~120
+// the ticks become unreadable so render in faint bands of dots.
+function drawRingTicks(ctx, cx, cy, r, dpr) {
   const divs    = Math.max(1, Math.round(paramState.detent_n));
   const dense   = divs > 120;
   const tickAngle = (2 * Math.PI) / divs;
@@ -4694,35 +4910,25 @@ function drawRing() {
                                ? twinDisp.ring          // eased by the 60 fps twin loop
                                : ringTicks * tickAngle);
   const majorEvery = divs >= 48 ? Math.max(1, Math.round(divs / 12)) : 6;
+  // Point at radius rr along angle a.
+  const at = (a, rr) => [cx + Math.cos(a) * rr, cy + Math.sin(a) * rr];
   for (let i = 0; i < divs; i++) {
     const a = dialRot + i * tickAngle;
     const isMajor = (i % majorEvery) === 0;
     if (dense && !isMajor) {
       // dot mark
-      const x = cx + Math.cos(a) * (r - 6 * dpr);
-      const y = cy + Math.sin(a) * (r - 6 * dpr);
+      const [x, y] = at(a, r - 6 * dpr);
       ctx.fillStyle = "#3a4a4a";
       ctx.beginPath(); ctx.arc(x, y, 1 * dpr, 0, 2 * Math.PI); ctx.fill();
       continue;
     }
     const tickLen = (isMajor ? 18 : 10) * dpr;
-    const x1 = cx + Math.cos(a) * (r - tickLen);
-    const y1 = cy + Math.sin(a) * (r - tickLen);
-    const x2 = cx + Math.cos(a) * (r - 2 * dpr);
-    const y2 = cy + Math.sin(a) * (r - 2 * dpr);
+    const [x1, y1] = at(a, r - tickLen);
+    const [x2, y2] = at(a, r - 2 * dpr);
     ctx.strokeStyle = isMajor ? "#ffb454" : "#4a5a5a";
     ctx.lineWidth   = (isMajor ? 3 : 1.5) * dpr;
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
-
-  // Tick counter in the center.
-  ctx.fillStyle = "#e2ece9";
-  ctx.font = `${36 * dpr}px 'IBM Plex Mono', monospace`;
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(String(ringTicks), cx, cy - 6 * dpr);
-  ctx.fillStyle = "#7f908d";
-  ctx.font = `${11 * dpr}px 'IBM Plex Mono', monospace`;
-  ctx.fillText("scroll ticks", cx, cy + 20 * dpr);
 }
 
 ringCanvas.addEventListener("wheel", (e) => {
@@ -4755,32 +4961,59 @@ const POS_SAT_MM  = POS_SAT_RAD * WHEEL_RADIUS_MM;  // ≈ 43.2 mm
 
 function drawBalance() {
   balanceRaf = 0;
-  const ctx = balanceCanvas.getContext("2d");
-  const dpr = devicePixelRatio || 1;
-  const W = balanceCanvas.width  = balanceCanvas.clientWidth  * dpr;
-  const H = balanceCanvas.height = balanceCanvas.clientHeight * dpr;
+  const { ctx, w: W, h: H, dpr } = fitCanvas(balanceCanvas);
   ctx.fillStyle = "#080d0f"; ctx.fillRect(0, 0, W, H);
 
   const cx0 = W / 2;
-  const groundY = H - 28 * dpr;
   const margin  = 30 * dpr;
   const trackHalf = (W / 2) - margin;
-  const poleLen = (H - 60 * dpr) * 0.85;
-  const dim = (balanceLive.mode === 1) ? 1.0 : 0.35;
   // Absolute display axis in mm of linear cart travel. Sized to fit
   // slider ±100 mm + saturation ±43.2 mm ≈ ±143 mm with some headroom.
   const X_RANGE_MM = 150;
   const pxPerMm    = trackHalf / X_RANGE_MM;
-  const wheelR     = 28 * dpr;
+  // Shared scene geometry for the part painters below.
+  const g = {
+    ctx, dpr, W, margin,
+    groundY: H - 28 * dpr,
+    poleLen: (H - 60 * dpr) * 0.85,
+    wheelR:  28 * dpr,
+    dim:     (balanceLive.mode === 1) ? 1.0 : 0.35,
+    mmToX:   mm => cx0 + mm * pxPerMm,
+  };
 
   // User-frame setpoint (mm) and tracking error (mm, sign-flipped from
   // chip shaft-rad frame to match physical direction).
   const setMm   = (typeof lqrState !== "undefined" && lqrState.x_ref) ? lqrState.x_ref : 0;
   const errMm   = -twinDisp.posErrSat * WHEEL_RADIUS_MM;   // eased @ display rate
   const cartMm  = setMm + errMm;
-  const satMm   = POS_SAT_MM;
+  // True physical position from the WORLD-frame shaft position (pkt[0] =
+  // shaft_angle + g_tilt + offset; unsaturated) — never the raw body-frame
+  // encoder angle. This is where the bot actually IS; cartMm above is what the
+  // controller *thinks* it is (delta-saturated tracker). The visible gap
+  // between them is the anti-windup error the slow drift is closing.
+  const trueMm = -twinDisp.shaft * WHEEL_RADIUS_MM;        // eased @ display rate
+  const gapMm  = trueMm - cartMm;
 
-  // Ground line.
+  drawBalanceRuler(g);
+  drawBalanceSetpoint(g, setMm);
+  drawBalanceCtrl(g, cartMm, trueMm, gapMm);
+  drawBalanceCart(g, trueMm);   // wheel (cart) drawn at the TRUE position
+
+  // Readout.
+  if (balanceInfo) {
+    const tDeg = toDeg(twinDisp.tilt).toFixed(1);
+    const satFlag = Math.abs(balanceLive.posErrSat) > POS_SAT_RAD - 1e-3 ? "  [SAT]" : "";
+    balanceInfo.textContent =
+      `cart = ${trueMm.toFixed(1)} mm   `
+      + `ctrl = ${cartMm.toFixed(1)} mm   `
+      + `Δ = ${gapMm.toFixed(1)} mm   `
+      + `setpoint = ${setMm.toFixed(0)} mm   `
+      + `err = ${errMm.toFixed(1)} mm${satFlag}   `
+      + `tilt = ${tDeg}°   mode = ${balanceLive.mode === 1 ? "BALANCE" : "haptic"}`;
+  }
+}
+// Ground line + mm ruler.
+function drawBalanceRuler({ ctx, dpr, W, margin, groundY, dim, mmToX }) {
   ctx.strokeStyle = `rgba(90, 105, 105, ${dim})`;
   ctx.lineWidth = 1 * dpr;
   ctx.beginPath();
@@ -4796,7 +5029,7 @@ function drawBalance() {
   ctx.font = `${10 * dpr}px 'IBM Plex Mono', monospace`;
   ctx.textAlign = "center";
   for (let mm = -150; mm <= 150; mm += 1) {
-    const x = cx0 + mm * pxPerMm;
+    const x = mmToX(mm);
     let tickH;
     if      (mm === 0)        tickH = 9 * dpr;
     else if (mm % 50 === 0)   tickH = 7 * dpr;
@@ -4806,13 +5039,15 @@ function drawBalance() {
     ctx.beginPath(); ctx.moveTo(x, groundY); ctx.lineTo(x, groundY + tickH); ctx.stroke();
     if (mm % 50 === 0) ctx.fillText(`${mm}`, x, groundY + 20 * dpr);
   }
-
-  // Saturation boundaries at setpoint ± satMm (move with setpoint).
+}
+// Saturation bounds + setpoint flag.
+function drawBalanceSetpoint({ ctx, dpr, groundY, poleLen, dim, mmToX }, setMm) {
+  // Saturation boundaries at setpoint ± POS_SAT_MM (move with setpoint).
   ctx.strokeStyle = `rgba(255, 98, 90, ${0.55 * dim})`;
   ctx.setLineDash([4 * dpr, 4 * dpr]);
   ctx.lineWidth = 1 * dpr;
   for (const s of [-1, 1]) {
-    const x = cx0 + (setMm + s * satMm) * pxPerMm;
+    const x = mmToX(setMm + s * POS_SAT_MM);
     ctx.beginPath();
     ctx.moveTo(x, groundY - poleLen - 20 * dpr);
     ctx.lineTo(x, groundY + 8 * dpr);
@@ -4821,7 +5056,7 @@ function drawBalance() {
   ctx.setLineDash([]);
 
   // Setpoint marker — solid vertical line + flag at the top.
-  const setX = cx0 + setMm * pxPerMm;
+  const setX = mmToX(setMm);
   ctx.strokeStyle = `rgba(84, 208, 127, ${0.85 * dim})`;
   ctx.lineWidth = 2 * dpr;
   ctx.beginPath();
@@ -4835,32 +5070,24 @@ function drawBalance() {
   ctx.lineTo(setX, groundY - poleLen - 4 * dpr);
   ctx.closePath();
   ctx.fill();
-
-  // True physical position from the WORLD-frame shaft position (pkt[0] =
-  // shaft_angle + g_tilt + offset; unsaturated) — never the raw body-frame
-  // encoder angle. This is where the bot actually IS; cartMm above is what the
-  // controller *thinks* it is (delta-saturated tracker). The visible gap
-  // between them is the anti-windup error the slow drift is closing.
-  const trueMm = -twinDisp.shaft * WHEEL_RADIUS_MM;        // eased @ display rate
-  const gapMm  = trueMm - cartMm;
-
+}
+// Controller's perceived cart position vs the truth.
+function drawBalanceCtrl({ ctx, dpr, groundY, poleLen, dim, mmToX }, cartMm, trueMm, gapMm) {
+  const ctrlX = mmToX(cartMm);
   // Red bar on the ground spanning the controller↔truth gap. Drawn
   // before the wheel so the wheel sits on top.
   if (Math.abs(gapMm) > 0.5) {
-    const ctrlX = cx0 + cartMm * pxPerMm;
-    const trueX = cx0 + trueMm * pxPerMm;
     ctx.strokeStyle = `rgba(255, 98, 90, ${0.85 * dim})`;
     ctx.lineWidth   = 5 * dpr;
     ctx.lineCap     = "round";
     ctx.beginPath();
     ctx.moveTo(ctrlX, groundY);
-    ctx.lineTo(trueX, groundY);
+    ctx.lineTo(mmToX(trueMm), groundY);
     ctx.stroke();
     ctx.lineCap = "butt";
   }
 
   // Dashed marker showing the controller's perceived cart position.
-  const ctrlX = cx0 + cartMm * pxPerMm;
   ctx.strokeStyle = `rgba(255, 98, 90, ${0.8 * dim})`;
   ctx.lineWidth   = 1.5 * dpr;
   ctx.setLineDash([4 * dpr, 4 * dpr]);
@@ -4873,9 +5100,11 @@ function drawBalance() {
   ctx.font       = `${10 * dpr}px 'IBM Plex Mono', monospace`;
   ctx.textAlign  = "center";
   ctx.fillText("ctrl", ctrlX, groundY - poleLen * 0.65 - 4 * dpr);
-
-  // Wheel (cart) drawn at the TRUE position.
-  const wx = cx0 + trueMm * pxPerMm;
+}
+// Pole tipped by the tilt, then the wheel + spoke on top.
+function drawBalanceCart({ ctx, dpr, groundY, poleLen, wheelR, dim, mmToX }, trueMm) {
+  const balancing = balanceLive.mode === 1;
+  const wx = mmToX(trueMm);
   const wy = groundY - wheelR;
 
   // Pole tipped by tilt angle (clamped to ±90° for drawing sanity).
@@ -4884,17 +5113,17 @@ function drawBalance() {
   const py = wy - Math.cos(tilt) * poleLen;
 
   // Pole.
-  ctx.strokeStyle = (balanceLive.mode === 1) ? "#ffb454" : `rgba(90, 105, 105, ${dim})`;
+  ctx.strokeStyle = balancing ? "#ffb454" : `rgba(90, 105, 105, ${dim})`;
   ctx.lineWidth   = 3 * dpr;
   ctx.beginPath(); ctx.moveTo(wx, wy); ctx.lineTo(px, py); ctx.stroke();
   // Pole bob.
-  ctx.fillStyle = (balanceLive.mode === 1) ? "#46d6c4" : `rgba(127, 144, 141, ${dim})`;
+  ctx.fillStyle = balancing ? "#46d6c4" : `rgba(127, 144, 141, ${dim})`;
   ctx.beginPath(); ctx.arc(px, py, 8 * dpr, 0, 2 * Math.PI); ctx.fill();
 
   // Wheel (drawn after the pole so it sits on top).
   ctx.fillStyle = `rgba(19, 29, 33, ${dim})`;
   ctx.beginPath(); ctx.arc(wx, wy, wheelR, 0, 2 * Math.PI); ctx.fill();
-  ctx.strokeStyle = (balanceLive.mode === 1) ? "#3fb950" : `rgba(90, 105, 105, ${dim})`;
+  ctx.strokeStyle = balancing ? "#3fb950" : `rgba(90, 105, 105, ${dim})`;
   ctx.lineWidth = 2 * dpr;
   ctx.beginPath(); ctx.arc(wx, wy, wheelR, 0, 2 * Math.PI); ctx.stroke();
   // Wheel spoke driven by the TRUE shaft angle (eased). Sign-flipped to
@@ -4905,19 +5134,6 @@ function drawBalance() {
   ctx.lineTo(wx + Math.cos(spokeA) * (wheelR - 2 * dpr),
              wy + Math.sin(spokeA) * (wheelR - 2 * dpr));
   ctx.stroke();
-
-  // Readout.
-  if (balanceInfo) {
-    const tDeg = (twinDisp.tilt * 180 / Math.PI).toFixed(1);
-    const satFlag = Math.abs(balanceLive.posErrSat) > POS_SAT_RAD - 1e-3 ? "  [SAT]" : "";
-    balanceInfo.textContent =
-      `cart = ${trueMm.toFixed(1)} mm   `
-      + `ctrl = ${cartMm.toFixed(1)} mm   `
-      + `Δ = ${gapMm.toFixed(1)} mm   `
-      + `setpoint = ${setMm.toFixed(0)} mm   `
-      + `err = ${errMm.toFixed(1)} mm${satFlag}   `
-      + `tilt = ${tDeg}°   mode = ${balanceLive.mode === 1 ? "BALANCE" : "haptic"}`;
-  }
 }
 new ResizeObserver(() => { if (!balanceRaf) balanceRaf = requestAnimationFrame(drawBalance); }).observe(balanceCanvas);
 drawBalance();
@@ -4966,7 +5182,7 @@ function onTelem(v) {
   petTelemetry();   // a packet arrived → keep the link "alive" (1 s watchdog)
   torqueBuf[torqueIdx] = v;
   torqueIdx = (torqueIdx + 1) % PLOT_LEN;
-  liveTorqueEl.textContent = `τ = ${v >= 0 ? "+" : ""}${v.toFixed(4)} V`;
+  liveTorqueEl.textContent = `τ = ${signedFixed(v, 4)} V`;
   if (!plotRaf) plotRaf = requestAnimationFrame(drawTorque);
 }
 let plotRaf = 0;
@@ -5001,7 +5217,7 @@ function drawAxes(ctx, w, h, dpr, yRange, yUnit, xSpanSec) {
     if (yv === 0) { ctx.setLineDash([2, 4]); ctx.strokeStyle = "#2a3940"; }
     else          { ctx.setLineDash([]);       ctx.strokeStyle = "#16242a"; }
     ctx.stroke();
-    ctx.fillText(`${yv >= 0 ? "+" : ""}${yv.toFixed((yUnit === "°" || yUnit === "°/s") ? 0 : 1)}${yUnit}`,
+    ctx.fillText(`${signedFixed(yv, (yUnit === "°" || yUnit === "°/s") ? 0 : 1)}${yUnit}`,
                  plotX - 4 * dpr, yp);
   }
   ctx.setLineDash([]);
@@ -5019,24 +5235,36 @@ function drawAxes(ctx, w, h, dpr, yRange, yUnit, xSpanSec) {
 
   return { plotX, plotY, plotW, plotH, yToPx };
 }
-
-function drawTorque() {
-  plotRaf = 0;
-  const ctx = torqueCanvas.getContext("2d");
-  const dpr = devicePixelRatio || 1;
-  const w = torqueCanvas.width  = torqueCanvas.clientWidth  * dpr;
-  const h = torqueCanvas.height = torqueCanvas.clientHeight * dpr;
-  // ~30 Hz telemetry × PLOT_LEN samples ≈ 20 s window
-  const ax = drawAxes(ctx, w, h, dpr, [-PLOT_YR, PLOT_YR], "V", 20);
-  ctx.strokeStyle = "#ffb454"; ctx.lineWidth = 1 * dpr;
+// One rolling trace: ring buffer `buf` with write index `head`, drawn oldest
+// (left) → newest (right) across the plot rect `ax`; toAxis maps the stored
+// unit to the axis unit. Stroke style/width are the caller's.
+function strokeRing(ctx, ax, buf, head, toAxis = v => v) {
+  const n = buf.length;
   ctx.beginPath();
-  for (let i = 0; i < PLOT_LEN; i++) {
-    const idx = (torqueIdx + i) % PLOT_LEN;
-    const x = ax.plotX + (i * ax.plotW) / (PLOT_LEN - 1);
-    const y = ax.yToPx(torqueBuf[idx]);
+  for (let i = 0; i < n; i++) {
+    const x = ax.plotX + (i * ax.plotW) / (n - 1);
+    const y = ax.yToPx(toAxis(buf[(head + i) % n]));
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
+}
+// Rolling strip chart: axes, an optional decorate(ctx, ax, dpr) overlay, then
+// one trace per { buf, color, toAxis? } — all ring buffers share write index head.
+function drawStripChart(canvas, { traces, head, yRange, yUnit, spanSec, lineWidth = 1, decorate }) {
+  const { ctx, w, h, dpr } = fitCanvas(canvas);
+  const ax = drawAxes(ctx, w, h, dpr, yRange, yUnit, spanSec);
+  if (decorate) decorate(ctx, ax, dpr);
+  for (const t of traces) {
+    ctx.strokeStyle = t.color; ctx.lineWidth = lineWidth * dpr;
+    strokeRing(ctx, ax, t.buf, head, t.toAxis);
+  }
+}
+
+function drawTorque() {
+  plotRaf = 0;
+  // ~30 Hz telemetry × PLOT_LEN samples ≈ 20 s window
+  drawStripChart(torqueCanvas, { traces: [{ buf: torqueBuf, color: "#ffb454" }], head: torqueIdx,
+                                 yRange: [-PLOT_YR, PLOT_YR], yUnit: "V", spanSec: 20 });
 }
 new ResizeObserver(drawTorque).observe(torqueCanvas);
 drawTorque();
@@ -5052,40 +5280,29 @@ let   tiltRateIdx    = 0;
 let   tiltRateRaf    = 0;
 const TILTRATE_YR_FLOOR = 60;   // °/s — minimum half-range
 
+// Round v up to the next 1 / 2 / 5 × 10^k (1 for non-positive v).
 function niceCeil(v) {
   if (!(v > 0)) return 1;
-  const p = Math.pow(10, Math.floor(Math.log10(v)));
-  const n = v / p;
-  const s = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
-  return s * p;
+  const decade = Math.pow(10, Math.floor(Math.log10(v)));
+  const mantissa = v / decade;
+  const step = mantissa <= 1 ? 1 : mantissa <= 2 ? 2 : mantissa <= 5 ? 5 : 10;
+  return step * decade;
 }
 function onTiltRate(radPerS) {
-  const degPerS = radPerS * 180 / Math.PI;
+  const degPerS = toDeg(radPerS);
   tiltRateBuf[tiltRateIdx] = degPerS;
   tiltRateIdx = (tiltRateIdx + 1) % PLOT_LEN;
   if (liveTiltRateEl)
-    liveTiltRateEl.textContent = `tilt' = ${degPerS >= 0 ? "+" : ""}${degPerS.toFixed(1)} °/s`;
+    liveTiltRateEl.textContent = `tilt' = ${signedFixed(degPerS, 1)} °/s`;
   if (!tiltRateRaf) tiltRateRaf = requestAnimationFrame(drawTiltRate);
 }
 function drawTiltRate() {
   tiltRateRaf = 0;
-  const ctx = tiltRateCanvas.getContext("2d");
-  const dpr = devicePixelRatio || 1;
-  const w = tiltRateCanvas.width  = tiltRateCanvas.clientWidth  * dpr;
-  const h = tiltRateCanvas.height = tiltRateCanvas.clientHeight * dpr;
   let maxAbs = 0;
   for (let i = 0; i < PLOT_LEN; i++) { const a = Math.abs(tiltRateBuf[i]); if (a > maxAbs) maxAbs = a; }
   const yr = Math.max(TILTRATE_YR_FLOOR, niceCeil(maxAbs));
-  const ax = drawAxes(ctx, w, h, dpr, [-yr, yr], "°/s", 20);
-  ctx.strokeStyle = "#7aa2ff"; ctx.lineWidth = 1 * dpr;
-  ctx.beginPath();
-  for (let i = 0; i < PLOT_LEN; i++) {
-    const idx = (tiltRateIdx + i) % PLOT_LEN;
-    const x = ax.plotX + (i * ax.plotW) / (PLOT_LEN - 1);
-    const y = ax.yToPx(tiltRateBuf[idx]);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
+  drawStripChart(tiltRateCanvas, { traces: [{ buf: tiltRateBuf, color: "#7aa2ff" }], head: tiltRateIdx,
+                                   yRange: [-yr, yr], yUnit: "°/s", spanSec: 20 });
 }
 new ResizeObserver(drawTiltRate).observe(tiltRateCanvas);
 drawTiltRate();
@@ -5103,33 +5320,24 @@ let   biasRaf    = 0;
 function onTiltBias(rad) {
   biasBuf[biasIdx] = rad;
   biasIdx = (biasIdx + 1) % PLOT_LEN;
-  const deg = rad * 180 / Math.PI;
-  biasInfo.textContent = `tbias = ${deg >= 0 ? "+" : ""}${deg.toFixed(2)}°  (${rad.toFixed(4)} rad)`;
+  biasInfo.textContent = `tbias = ${signedFixed(toDeg(rad), 2)}°  (${rad.toFixed(4)} rad)`;
   if (!biasRaf) biasRaf = requestAnimationFrame(drawBias);
 }
 function drawBias() {
   biasRaf = 0;
-  const ctx = biasCanvas.getContext("2d");
-  const dpr = devicePixelRatio || 1;
-  const w = biasCanvas.width  = biasCanvas.clientWidth  * dpr;
-  const h = biasCanvas.height = biasCanvas.clientHeight * dpr;
-  const ax = drawAxes(ctx, w, h, dpr, [-BIAS_YR_DEG, BIAS_YR_DEG], "°", 20);
-  // ±cap dashed lines at the firmware's hard cap (matches axis ends here).
+  drawStripChart(biasCanvas, {
+    traces: [{ buf: biasBuf, color: "#46d6c4", toAxis: toDeg }],   // curve: rad → deg for plotting
+    head: biasIdx, yRange: [-BIAS_YR_DEG, BIAS_YR_DEG], yUnit: "°", spanSec: 20, lineWidth: 1.5,
+    decorate: drawBiasCapLines,
+  });
+}
+// ±cap dashed lines at the firmware's hard cap (matches axis ends here).
+function drawBiasCapLines(ctx, ax, dpr) {
   ctx.strokeStyle = "rgba(255, 98, 90, 0.35)";
   ctx.setLineDash([4 * dpr, 4 * dpr]);
   ctx.beginPath(); ctx.moveTo(ax.plotX, ax.plotY); ctx.lineTo(ax.plotX + ax.plotW, ax.plotY); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(ax.plotX, ax.plotY + ax.plotH); ctx.lineTo(ax.plotX + ax.plotW, ax.plotY + ax.plotH); ctx.stroke();
   ctx.setLineDash([]);
-  // Curve (rad → deg for plotting).
-  ctx.strokeStyle = "#46d6c4"; ctx.lineWidth = 1.5 * dpr;
-  ctx.beginPath();
-  for (let i = 0; i < PLOT_LEN; i++) {
-    const idx = (biasIdx + i) % PLOT_LEN;
-    const x = ax.plotX + (i * ax.plotW) / (PLOT_LEN - 1);
-    const y = ax.yToPx(biasBuf[idx] * 180 / Math.PI);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
 }
 new ResizeObserver(drawBias).observe(biasCanvas);
 drawBias();
@@ -5184,10 +5392,9 @@ let _acroWasActive = false;
 function setAcroActive(on) {
   const cb   = document.getElementById("acroPlant");
   const body = document.getElementById("acroBody");
-  const pill = document.getElementById("acroSysPill");
   if (cb)   cb.checked = on;
   if (body) body.hidden = !on;
-  if (pill) { pill.textContent = on ? "ACRO" : "plant —"; pill.className = on ? "pill ok" : "pill"; }
+  setPill("acroSysPill", on ? "ACRO" : "plant —", on ? "pill ok" : "pill");
   setTwinPlant(on);
   if (on && !acroRaf) acroRaf = requestAnimationFrame(drawAcro);   // canvas just un-hid
   // On the cart→acro transition, re-pull the registry (Z): the acro-only
@@ -5213,20 +5420,21 @@ function setAcroActive(on) {
 // pill text is throttled to ~10 Hz (readability + layout churn) and the
 // rolling plots run at ~30 Hz (operator-set cadence).
 let _acroPillMs = 0, _acroPlotMs = 0;
+// Acro motion primitives from bytes 64..79 of an ≥80-byte telemetry packet.
+// Names follow the wire/[ACRO] tokens: qimu = IMU link angle (deg), sh = elbow
+// shaft angle (deg); w* = their rates (deg/s).
+function readAcroMotion(dv) {
+  return { qimu: f32le(dv, 64), wimu: f32le(dv, 68),
+           sh:   f32le(dv, 72), wsh:  f32le(dv, 76) };
+}
 function acroApplyMotion(qImu, wImu, sh, wsh) {
   const q2 = qImu, w2 = wImu, q1 = qImu + sh, w1 = wImu + wsh;
   acroState.q1 = q1; acroState.q2 = q2; acroState.w1 = w1; acroState.w2 = w2;
   acroState.t = performance.now();   // sample arrival time (diagnostics)
   acroState.valid = true;
-  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-  const d1  = v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}`;
   if (acroState.t - _acroPillMs >= 100) {
     _acroPillMs = acroState.t;
-    set("acroQ1",  `q1 = ${d1(q1)}°`);
-    set("acroW1",  `w1 = ${d1(w1)}°/s`);
-    set("acroQ2",  `q2 = ${d1(q2)}°`);
-    set("acroW2",  `w2 = ${d1(w2)}°/s`);
-    set("acroSh",  `sh = ${d1(sh)}°`);   // raw wire value, for link-2-derivation diagnosis
+    showAcroGauges(q1, w1, q2, w2, sh);
   }
   if (acroState.t - _acroPlotMs >= 33) {   // ~30 Hz plot cadence (operator-set)
     _acroPlotMs = acroState.t;
@@ -5236,25 +5444,25 @@ function acroApplyMotion(qImu, wImu, sh, wsh) {
   acroDispQ1 = q1; acroDispQ2 = q2;
   if (!acroRaf) acroRaf = requestAnimationFrame(drawAcro);
 }
+function showAcroGauges(q1, w1, q2, w2, sh) {
+  setText("acroQ1",  `q1 = ${signedFixed(q1, 1)}°`);
+  setText("acroW1",  `w1 = ${signedFixed(w1, 1)}°/s`);
+  setText("acroQ2",  `q2 = ${signedFixed(q2, 1)}°`);
+  setText("acroW2",  `w2 = ${signedFixed(w2, 1)}°/s`);
+  setText("acroSh",  `sh = ${signedFixed(sh, 1)}°`);   // raw wire value, for link-2-derivation diagnosis
+}
 
 // [ACRO] line handler — motion via acroApplyMotion + the line-only extras:
 // hang= (cal state) and st= (task phase) are authoritative HERE, not in the
 // binary packet; qacc= (accel-only angle) rides along for the CF diagnosis.
 function onAcro(hang, qImu, wImu, sh, wsh, st, qacc) {
   acroState.hang = hang|0;
-  if (qacc !== null && qacc !== undefined) {
-    const el = document.getElementById("acroQacc");
-    if (el) el.textContent = `qacc = ${qacc >= 0 ? "+" : ""}${qacc.toFixed(1)}°`;
-  }
-  const hp = document.getElementById("acroHangPill");
-  if (hp) {
-    if (hang) { hp.textContent = "hang set"; hp.className = "pill ok"; }
-    else      { hp.textContent = "HANG NOT SET"; hp.className = "pill bad"; }
-  }
+  if (qacc !== null && qacc !== undefined) setText("acroQacc", `qacc = ${signedFixed(qacc, 1)}°`);
+  setAcroHangPill(hang);
   // Swing-axis cal (GA) requires the hang cal first — grey the button until hang=1,
   // and drop the axis status if the hang datum is lost (axis would be invalid).
-  const sa = document.getElementById("btnAcroSwingAxis");
-  if (sa) sa.disabled = !hang;
+  const swingAxisBtn = document.getElementById("btnAcroSwingAxis");
+  if (swingAxisBtn) swingAxisBtn.disabled = !hang;
   if (!hang) setAcroAxis(false);
   if (st) setAcroState(st);
   acroApplyMotion(qImu, wImu, sh, wsh);
@@ -5265,28 +5473,28 @@ function onAcro(hang, qImu, wImu, sh, wsh, st, qacc) {
 // from the controller's frame. Sign problems are fixed with FW `acssh`.)
 
 // Task-state indicator from the [ACRO] st= field.
+const ACRO_TASK_PILLS = {
+  off:   ["task: off",        "pill"],
+  swing: ["task: swing-up",   "pill warn"],
+  bal:   ["task: balancing",  "pill ok"],
+};
 function setAcroState(st) {
-  const pill = document.getElementById("acroStatePill");
-  if (!pill) return;
-  const map = {
-    off:   ["task: off",        "pill"],
-    swing: ["task: swing-up",   "pill warn"],
-    bal:   ["task: balancing",  "pill ok"],
-  };
-  const [txt, cls] = map[st] || [`task: ${st}`, "pill"];
-  pill.textContent = txt; pill.className = cls;
+  const [txt, cls] = ACRO_TASK_PILLS[st] || [`task: ${st}`, "pill"];
+  setPill("acroStatePill", txt, cls);
 }
 
+// Hang-zero cal status (GH) — from the [ACRO] hang= flag.
+function setAcroHangPill(set) {
+  setPill("acroHangPill", set ? "hang set" : "HANG NOT SET", set ? "pill ok" : "pill bad");
+}
 // Swing-axis cal status — set from the [GRAV] swing AXIS= reply (GA success).
 function setAcroAxis(ok) {
-  const pill = document.getElementById("acroAxisPill");
-  if (pill) { pill.textContent = ok ? "axis set" : "AXIS NOT SET"; pill.className = ok ? "pill ok" : "pill bad"; }
+  setPill("acroAxisPill", ok ? "axis set" : "AXIS NOT SET", ok ? "pill ok" : "pill bad");
 }
 
 // ARM gate (acarm). DISARMED = neutral; ARMED = amber (live/energized).
 function setAcroArmPill(armed) {
-  const pill = document.getElementById("acroArmPill");
-  if (pill) { pill.textContent = armed ? "ARMED" : "DISARMED"; pill.className = armed ? "pill warn" : "pill"; }
+  setPill("acroArmPill", armed ? "ARMED" : "DISARMED", armed ? "pill warn" : "pill");
 }
 // Authoritative sync from a [TUN] acarm= echo — reconciles the toggle + pill
 // without re-sending (unless the user is mid-interaction with the checkbox).
@@ -5303,26 +5511,29 @@ function resetAcro() {
   else if (sidBatch.active) sidBatchEnd("link lost");
   acroState.valid = false; acroState.q1 = 0; acroState.q2 = 0; acroState.hang = 0;
   acroState.w1 = 0; acroState.w2 = 0; acroState.t = 0;
-  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-  set("acroQ1",  "q1 = —"); set("acroW1", "w1 = —");
-  set("acroQ2",  "q2 = —");  set("acroW2", "w2 = —");
-  set("acroSh",  "sh = —");  set("acroQacc", "qacc = —");
-  const hp = document.getElementById("acroHangPill");
-  if (hp) { hp.textContent = "HANG NOT SET"; hp.className = "pill bad"; }
+  resetAcroReadouts();
+  _acroWasActive = false;  // so a reconnect into acro re-pulls the registry (Z)
+  setTwinPlant(false);     // twin back to the cart view; [SYS] ACRO re-swaps on reconnect
+  clearAcroPlots();
+}
+// Gauges + status pills back to their no-link state.
+function resetAcroReadouts() {
+  setText("acroQ1",  "q1 = —"); setText("acroW1", "w1 = —");
+  setText("acroQ2",  "q2 = —"); setText("acroW2", "w2 = —");
+  setText("acroSh",  "sh = —"); setText("acroQacc", "qacc = —");
+  setAcroHangPill(false);
   setAcroAxis(false);      // clear axis-cal status
   setAcroTargetUI(false);  // back to the Hang default; [TUN] actgt= re-syncs on reconnect
   const sax = document.getElementById("btnAcroSwingAxis");
   if (sax) sax.disabled = true;   // re-gated until hang=1 after reconnect
-  const sp = document.getElementById("acroSysPill");
-  if (sp) { sp.textContent = "plant —"; sp.className = "pill"; }
-  const stp = document.getElementById("acroStatePill");
-  if (stp) { stp.textContent = "task: —"; stp.className = "pill"; }
+  setPill("acroSysPill", "plant —", "pill");
+  setPill("acroStatePill", "task: —", "pill");
   const arm = document.getElementById("acroArm");
   if (arm) arm.checked = false;
   setAcroArmPill(false);   // don't imply armed on a dead link; [TUN] re-syncs on reconnect
-  _acroWasActive = false;  // so a reconnect into acro re-pulls the registry (Z)
-  setTwinPlant(false);     // twin back to the cart view; [SYS] ACRO re-swaps on reconnect
-  // Blank the plots + pose so a dropped link doesn't leave stale traces on screen.
+}
+// Blank the plots + pose so a dropped link doesn't leave stale traces on screen.
+function clearAcroPlots() {
   acroDispQ1 = 0; acroDispQ2 = 0;
   acroQ1Buf.fill(0); acroQ2Buf.fill(0); acroW1Buf.fill(0); acroW2Buf.fill(0); acroPlotIdx = 0;
   if (!acroAnglesRaf) acroAnglesRaf = requestAnimationFrame(drawAcroAngles);
@@ -5338,10 +5549,7 @@ function resetAcro() {
 function drawAcro() {
   acroRaf = 0;
   if (!acroCanvas) return;
-  const ctx = acroCanvas.getContext("2d");
-  const dpr = devicePixelRatio || 1;
-  const w = acroCanvas.width  = acroCanvas.clientWidth  * dpr;
-  const h = acroCanvas.height = acroCanvas.clientHeight * dpr;
+  const { ctx, w, h, dpr } = fitCanvas(acroCanvas);
   ctx.clearRect(0, 0, w, h);
   const cx = w / 2, cy = h / 2;
   const reach = Math.min(w, h) * 0.42;
@@ -5375,36 +5583,22 @@ function drawAcro() {
 }
 if (acroCanvas) { new ResizeObserver(drawAcro).observe(acroCanvas); drawAcro(); }
 
-// Two-trace rolling strip chart shared by the angle + velocity plots.
-function drawAcroSeries(canvas, bufs, colors, yRange, yUnit) {
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  const dpr = devicePixelRatio || 1;
-  const w = canvas.width  = canvas.clientWidth  * dpr;
-  const h = canvas.height = canvas.clientHeight * dpr;
-  const ax = drawAxes(ctx, w, h, dpr, yRange, yUnit, ACRO_PLOT_SPAN);
-  for (let t = 0; t < bufs.length; t++) {
-    ctx.strokeStyle = colors[t]; ctx.lineWidth = 1 * dpr;
-    ctx.beginPath();
-    for (let i = 0; i < ACRO_PLOT_LEN; i++) {
-      const idx = (acroPlotIdx + i) % ACRO_PLOT_LEN;
-      const x = ax.plotX + (i * ax.plotW) / (ACRO_PLOT_LEN - 1);
-      const y = ax.yToPx(bufs[t][idx]);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
-}
+// Two-trace strip-chart spec (link 1 / link 2 colours) shared by the angle +
+// velocity plots.
+const acroStrip = (buf1, buf2, yRange, yUnit) => ({
+  traces: [{ buf: buf1, color: ACRO_C1 }, { buf: buf2, color: ACRO_C2 }],
+  head: acroPlotIdx, yRange, yUnit, spanSec: ACRO_PLOT_SPAN,
+});
 function drawAcroAngles() {
   acroAnglesRaf = 0;
-  drawAcroSeries(acroAnglesCanvas, [acroQ1Buf, acroQ2Buf], [ACRO_C1, ACRO_C2], [-180, 180], "°");
+  if (acroAnglesCanvas) drawStripChart(acroAnglesCanvas, acroStrip(acroQ1Buf, acroQ2Buf, [-180, 180], "°"));
 }
 function drawAcroVel() {
   acroVelRaf = 0;
   let maxAbs = 0;
   for (let i = 0; i < ACRO_PLOT_LEN; i++) maxAbs = Math.max(maxAbs, Math.abs(acroW1Buf[i]), Math.abs(acroW2Buf[i]));
   const yr = Math.max(60, niceCeil(maxAbs));   // auto-scale with a 60 °/s floor
-  drawAcroSeries(acroVelCanvas, [acroW1Buf, acroW2Buf], [ACRO_C1, ACRO_C2], [-yr, yr], "°/s");
+  if (acroVelCanvas) drawStripChart(acroVelCanvas, acroStrip(acroW1Buf, acroW2Buf, [-yr, yr], "°/s"));
 }
 function pushAcroPlot(q1, q2, w1, w2) {
   acroQ1Buf[acroPlotIdx] = q1; acroQ2Buf[acroPlotIdx] = q2;
@@ -5530,18 +5724,17 @@ function reseedAcroGains() {
 // Build one .slider-row exactly like the Balancing LQR gains: label + read-only
 // cyan value readout + full-width auto-fitting slider. The value is initialised
 // at build (never blank) and updated from the slider or a [TUN] reconcile.
-function makeAcroGainRow(wrap, name, label, onChange) {
-  const row = document.createElement("div"); row.className = "slider-row";
-  const lbl = document.createElement("label"); lbl.textContent = label;
-  const val = document.createElement("span"); val.className = "value";
+// commit(v) shows the value and queues `Cu <name>=v`.
+function makeAcroGainRow(wrap, name, label) {
+  const { row, val } = makeSliderRow(label);
   val.textContent = fmtGain(0);   // seed the readout at build like LQR_PARAMS do
   const sld = document.createElement("input");
   sld.type = "range"; sld.className = "needs-conn";
   sld.min = -ACRO_GAIN_FLOOR; sld.max = ACRO_GAIN_FLOOR; sld.step = ACRO_GAIN_FLOOR / 200; sld.value = 0;
-  row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
+  row.appendChild(sld);
   wrap.appendChild(row);
   const rec = acroGainEls[name] = { slider: sld, valEl: val, bound: ACRO_GAIN_FLOOR, row, label,
-    commit(v) { val.textContent = fmtGain(v); onChange(v); } };
+    commit(v) { val.textContent = fmtGain(v); queueTun(name, v); } };
   sld.addEventListener("input", () => {
     let v = parseFloat(sld.value);
     // Center detent: a DRAG landing within ±2% of the bound snaps to exactly
@@ -5558,12 +5751,7 @@ function makeAcroGainRow(wrap, name, label, onChange) {
 (function buildAcroGains() {
   const wrap = document.getElementById("acroGains");
   if (!wrap) return;
-  for (const g of ACRO_GAINS) {
-    makeAcroGainRow(wrap, g.name, g.label, v => {
-      tunState[g.name] = v;
-      pendingSends[`__tun_${g.name}`] = { kind: "Cu", name: g.name, val: v };
-    });
-  }
+  for (const g of ACRO_GAINS) makeAcroGainRow(wrap, g.name, g.label);
 })();
 
 // LQR target pose (actgt) — Upright ⇄ Hang toggle. Hang (180°) is the stable
@@ -5572,18 +5760,16 @@ function makeAcroGainRow(wrap, name, label, onChange) {
 const acroTargetChk = document.getElementById("acroTargetUpright");
 function setAcroTargetUI(upright) {
   if (acroTargetChk && document.activeElement !== acroTargetChk) acroTargetChk.checked = upright;
-  const pill = document.getElementById("acroTargetPill");
-  if (pill) { pill.textContent = upright ? "target: upright" : "target: hang"; pill.className = upright ? "pill warn" : "pill"; }
+  setPill("acroTargetPill", upright ? "target: upright" : "target: hang", upright ? "pill warn" : "pill");
 }
 if (acroTargetChk) acroTargetChk.addEventListener("change", () => {
   const upright = acroTargetChk.checked;
-  tunState.actgt = upright ? 0 : 180;
-  pendingSends["__tun_actgt"] = { kind: "Cu", name: "actgt", val: upright ? 0 : 180 };
+  queueTun("actgt", upright ? 0 : 180);
   setAcroTargetUI(upright);
   log(upright ? "LQR target → UPRIGHT (the real, unstable goal)."
               : "LQR target → HANG (stable — for gain tuning).", "ok");
 });
-function syncAcroTarget(val) { setAcroTargetUI(Math.abs(val) < 90); }   // 0→upright, 180→hang
+function syncAcroTarget(targetDeg) { setAcroTargetUI(Math.abs(targetDeg) < 90); }   // 0→upright, 180→hang
 
 // Swing-up enable — drives the firmware's acsw (0/1) flag directly. OFF =
 // balance-only (it only catches when you bring the bot near upright by hand);
@@ -5592,8 +5778,7 @@ function syncAcroTarget(val) { setAcroTargetUI(Math.abs(val) < 90); }   // 0→u
 const acroSwingChk = document.getElementById("acroSwingOn");
 if (acroSwingChk) acroSwingChk.addEventListener("change", () => {
   const on = acroSwingChk.checked;
-  tunState.acsw = on ? 1 : 0;
-  pendingSends["__tun_acsw"] = { kind: "Cu", name: "acsw", val: on ? 1 : 0 };
+  queueTun("acsw", on ? 1 : 0);
   log(on ? "Swing-up enabled." : "Swing-up disabled — balance-only.", "ok");
 });
 function syncAcroSwing(val) {   // from [TUN] acsw= echo / dump
@@ -5603,10 +5788,7 @@ function syncAcroSwing(val) {   // from [TUN] acsw= echo / dump
 (function buildAcroPump() {
   const wrap = document.getElementById("acroSwingGain");
   if (!wrap) return;
-  makeAcroGainRow(wrap, "acpump", "pump gain", v => {
-    tunState.acpump = v;
-    pendingSends["__tun_acpump"] = { kind: "Cu", name: "acpump", val: v };
-  });
+  makeAcroGainRow(wrap, "acpump", "pump gain");
 })();
 
 // ARM gate — bespoke, confirm-guarded acarm toggle. Queues `Cu acarm=1/0` through
@@ -5623,8 +5805,7 @@ if (acroArmEl) acroArmEl.onchange = (e) => {
     e.target.checked = false;
     return;
   }
-  tunState.acarm = on ? 1 : 0;   // UI-authoritative; pump sends, echo reconciles
-  pendingSends["__tun_acarm"] = { kind: "Cu", name: "acarm", val: on ? 1 : 0 };
+  queueTun("acarm", on ? 1 : 0);   // UI-authoritative; pump sends, echo reconciles
   setAcroArmPill(on);
   log(on ? "ARMED — acrobot controller running (swing-up → balance). Hold the rig."
          : "DISARMED — acrobot holds zero torque.", on ? "warn" : "ok");
@@ -5645,28 +5826,30 @@ if (acroArmEl) acroArmEl.onchange = (e) => {
 // hold for the (zero-order-hold) torque.
 const SID_MAX_MS   = 45000;  // auto-stop backstop (fw pattern proposed ~20 s)
 const SID_MIN_ROWS = 120;    // fitter rejects <100 samples; margin for resample
-const sid = { rec: false, rows: [], tauSeen: false, lastRaw: null, accMs: 0,
-              uwQ2: null, uwSh: null, timer: 0,
+const sid = { rec: false, rows: [], tauSeen: false,
+              lastFwMs: null, runMs: 0,   // last fw t_ms seen / run time accumulated from it
+              qimuUnwrap: null, shUnwrap: null, timer: 0,
               beginInfo: null,     // parsed [SID] begin tokens (dur/amp/gov) → log meta
               onFinalize: null };  // batch-collector hook, called at the end of sidStop
 
-function sidPill(txt, cls) {
-  const el = document.getElementById("acroSysidPill");
-  if (el) { el.textContent = txt; el.className = cls || "pill"; }
-}
+function sidPill(txt, cls) { setPill("acroSysidPill", txt, cls || "pill"); }
 function sidButtons(running) {
   const run  = document.getElementById("btnAcroSysid");
   const stop = document.getElementById("btnAcroSysidStop");
   if (run)  run.disabled = running;
   if (stop) stop.hidden  = !running;
 }
+function setSidDownloadEnabled(on) {
+  const dl = document.getElementById("btnAcroSysidDl");
+  if (dl) dl.disabled = !on;
+}
 // Track a wrapping ±180° signal into a continuous one. A genuine >180°/sample
 // jump can't happen at the packet rate, so the shortest-arc delta is safe.
-function sidUnwrap(uw, v) {
-  let d = v - uw.raw;
-  d -= 360 * Math.round(d / 360);
-  uw.raw = v; uw.cont += d;
-  return uw.cont;
+function sidUnwrap(tracker, deg) {
+  let step = deg - tracker.raw;
+  step -= 360 * Math.round(step / 360);
+  tracker.raw = deg; tracker.cont += step;
+  return tracker.cont;
 }
 
 // Per-packet capture — called from the telemetry handler for every ≥80-byte
@@ -5674,30 +5857,42 @@ function sidUnwrap(uw, v) {
 // time, so BLE jitter never lands in the log.
 function sidOnPacket(dv) {
   if (!sid.rec) return;
-  const rawMs = dv.getUint32(60, true);
-  if (sid.lastRaw === null) {
-    sid.accMs = 0;
-  } else {
-    const d = (rawMs - sid.lastRaw) >>> 0;   // wrap-safe fw-clock delta
-    if (d > 5000) return sidStop("telemetry gap/fw reset");   // data unusable across it
-    if (d === 0)  return;                    // duplicate ms — keep t strictly increasing
-    sid.accMs += d;
-  }
-  sid.lastRaw = rawMs;
-  const qimu = dv.getFloat32(64, true), wimu = dv.getFloat32(68, true);
-  const sh   = dv.getFloat32(72, true), wsh  = dv.getFloat32(76, true);
-  let tau = 0;
-  if (dv.byteLength >= 84) { tau = dv.getFloat32(80, true); sid.tauSeen = true; }
-  // Unwrap qimu and sh independently, then derive the shoulder on the
-  // CONTINUOUS values (q1 = qimu + sh, contract (h)).
-  const uq = sidUnwrap(sid.uwQ2 || (sid.uwQ2 = { raw: qimu, cont: qimu }), qimu);
-  const us = sidUnwrap(sid.uwSh || (sid.uwSh = { raw: sh,   cont: sh   }), sh);
-  const D = Math.PI / 180;
-  sid.rows.push({ t: sid.accMs / 1000,
-                  th1: (uq + us) * D, th2: uq * D,
-                  w1: (wimu + wsh) * D, w2: wimu * D, tau });
+  if (!sidAdvanceClock(dv.getUint32(60, true))) return;
+  const motion = readAcroMotion(dv);
+  sid.rows.push(sidSampleRow(motion, sidAppliedTorque(dv)));
   if ((sid.rows.length & 15) === 1)   // pill at ~4 Hz, not per packet
-    sidPill(`sysid: recording — ${sid.rows.length} · ${(sid.accMs / 1000).toFixed(1)} s`, "pill warn");
+    sidPill(`sysid: recording — ${sid.rows.length} · ${(sid.runMs / 1000).toFixed(1)} s`, "pill warn");
+}
+// Applied elbow torque, f32 @80 once the fw streams 84-byte packets; else 0.
+function sidAppliedTorque(dv) {
+  if (dv.byteLength < 84) return 0;
+  sid.tauSeen = true;
+  return f32le(dv, 80);
+}
+// One log row (rad, rad/s; t in s). Unwrap qimu and sh independently, then
+// derive the shoulder on the CONTINUOUS values (q1 = qimu + sh, contract (h)).
+function sidSampleRow({ qimu, wimu, sh, wsh }, tau) {
+  const qimuCont = sidUnwrap(sid.qimuUnwrap || (sid.qimuUnwrap = { raw: qimu, cont: qimu }), qimu);
+  const shCont   = sidUnwrap(sid.shUnwrap || (sid.shUnwrap = { raw: sh,   cont: sh   }), sh);
+  const RAD_PER_DEG = Math.PI / 180;
+  return { t: sid.runMs / 1000,
+           th1: (qimuCont + shCont) * RAD_PER_DEG, th2: qimuCont * RAD_PER_DEG,
+           w1: (wimu + wsh) * RAD_PER_DEG, w2: wimu * RAD_PER_DEG, tau };
+}
+// Advance the run clock to the packet's fw t_ms (fwMs). False when the sample must be
+// dropped: a duplicate ms (t stays strictly increasing) or a gap/reset, which
+// also stops the run (data unusable across it).
+function sidAdvanceClock(fwMs) {
+  if (sid.lastFwMs === null) {
+    sid.runMs = 0;
+  } else {
+    const dMs = (fwMs - sid.lastFwMs) >>> 0;   // wrap-safe fw-clock delta
+    if (dMs > 5000) { sidStop("telemetry gap/fw reset"); return false; }
+    if (dMs === 0)  return false;
+    sid.runMs += dMs;
+  }
+  sid.lastFwMs = fwMs;
+  return true;
 }
 
 // Pre-warn the fw gates (fw ≥2021 rejects AX with a [SID] abort naming the
@@ -5711,18 +5906,21 @@ function sidWarnGates() {
     log("⚠ Links not at settled hang (|qimu| > ~149° and still) — firmware will abort not-settled.", "warn");
 }
 
+// (Re)arm the recorder's auto-stop backstop.
+function sidArmBackstop(ms) {
+  clearTimeout(sid.timer);
+  sid.timer = setTimeout(() => sidStop("time limit"), ms);
+}
 // Clear state + send AX + arm the backstop. Shared by the single-run button
 // (which confirms first) and the batch collector (one confirm for the batch).
 async function sidBeginRun() {
-  sid.rows = []; sid.tauSeen = false; sid.lastRaw = null; sid.accMs = 0;
-  sid.uwQ2 = null; sid.uwSh = null; sid.beginInfo = null;
+  sidResetCapture();
   sid.rec = true;
-  const dl = document.getElementById("btnAcroSysidDl");
-  if (dl) dl.disabled = true;   // stale run gone; re-enabled on a good finalize
+  setSidDownloadEnabled(false);   // stale run gone; re-enabled on a good finalize
   try { await transport.writeCmd("AX\n"); }
   catch (e) { sid.rec = false; log("SysID trigger failed: " + errMsg(e), "bad"); return false; }
   sidButtons(true);
-  sid.timer = setTimeout(() => sidStop("time limit"), SID_MAX_MS);
+  sidArmBackstop(SID_MAX_MS);
   return true;
 }
 
@@ -5740,24 +5938,36 @@ async function sidStart() {
   }
 }
 
+// Fresh capture state for the next run.
+function sidResetCapture() {
+  sid.rows = []; sid.tauSeen = false; sid.lastFwMs = null; sid.runMs = 0;
+  sid.qimuUnwrap = null; sid.shUnwrap = null; sid.beginInfo = null;
+}
 function sidStop(reason) {
   if (!sid.rec) return;
   sid.rec = false;
   clearTimeout(sid.timer);
   const n = sid.rows.length, dur = n ? sid.rows[n - 1].t : 0;
   const ok = n >= SID_MIN_ROWS;
-  const dl = document.getElementById("btnAcroSysidDl");
-  if (dl) dl.disabled = !ok;
+  setSidDownloadEnabled(ok);
   sidButtons(false);
+  sidReportRun(reason, n, dur, ok);
+  if (sid.onFinalize) sid.onFinalize(reason, ok, n, dur);   // batch collector hook
+}
+// Result pill + console summary for a finished run.
+function sidReportRun(reason, n, dur, ok) {
   sidPill(ok ? `sysid: ${n} samples · ${dur.toFixed(1)} s · τ ${sid.tauSeen ? "wire" : "zero"}`
              : `sysid: ${reason} — ${n} samples (need ${SID_MIN_ROWS})`,
           ok ? "pill ok" : "pill bad");
-  log(`SysID run ${reason}: ${n} samples over ${dur.toFixed(1)} s` + (ok
-      ? ` — ready to download. Torque column: ${sid.tauSeen
-          ? "applied τ off the wire."
-          : "ZERO (no torque telemetry) — fit-valid only if this was a disarmed free swing."}`
-      : " — too short for the fitter; not downloadable."), ok ? "ok" : "warn");
-  if (sid.onFinalize) sid.onFinalize(reason, ok, n, dur);   // batch collector hook
+  log(sidStopSummary(reason, n, dur, ok), ok ? "ok" : "warn");
+}
+function sidStopSummary(reason, n, dur, ok) {
+  const torque = sid.tauSeen
+    ? "applied τ off the wire."
+    : "ZERO (no torque telemetry) — fit-valid only if this was a disarmed free swing.";
+  return `SysID run ${reason}: ${n} samples over ${dur.toFixed(1)} s` + (ok
+    ? ` — ready to download. Torque column: ${torque}`
+    : " — too short for the fitter; not downloadable.");
 }
 
 // [SID] lifecycle line → recorder control (contract live in fw ≥2021; matched
@@ -5772,20 +5982,21 @@ function onSidLine(text) {
   else if (ab)                                  sidStop("abort: " + (ab[1].trim() || "(fw)"));
   else if (/\b(reject|fail)/i.test(text))       sidStop("aborted (fw)");
   else if (/\b(begin|start)/i.test(text)) {
-    // Re-key the backstop to the run's actual duration (+5 s margin) — fw
-    // suggestion; acxs is clamped 2–60 s so this always beats a flat 45.
-    const dm = text.match(/\bdur=([\d.]+)/);
-    if (dm) {
-      clearTimeout(sid.timer);
-      sid.timer = setTimeout(() => sidStop("time limit"), (parseFloat(dm[1]) + 5) * 1000);
-    }
     // Capture the run parameters for the log meta (amp is post-auto-resolve;
     // gov= = the fw amplitude governor is active, fw ≥1438).
-    sid.beginInfo = { dur: dm ? parseFloat(dm[1]) : null,
-                      amp_V: parseFloat((text.match(/\bamp=([\d.]+)/) || [])[1]) || null,
-                      gov: (text.match(/\bgov=(\S+)/) || [])[1] || null };
+    sid.beginInfo = parseSidBegin(text);
+    // Re-key the backstop to the run's actual duration (+5 s margin) — fw
+    // suggestion; acxs is clamped 2–60 s so this always beats a flat 45.
+    if (sid.beginInfo.dur !== null) sidArmBackstop((sid.beginInfo.dur + 5) * 1000);
     sidPill("sysid: recording — fw pattern running", "pill warn");
   }
+}
+// [SID] begin tokens → { dur (s), amp_V, gov } (null where absent).
+function parseSidBegin(text) {
+  const dm = text.match(/\bdur=([\d.]+)/);
+  return { dur: dm ? parseFloat(dm[1]) : null,
+           amp_V: parseFloat((text.match(/\bamp=([\d.]+)/) || [])[1]) || null,
+           gov: (text.match(/\bgov=(\S+)/) || [])[1] || null };
 }
 
 // Build the gymbot logio-schema CSV from the captured rows, resampled onto an
@@ -5795,7 +6006,12 @@ function onSidLine(text) {
 function sidBuildCsv(extraMeta) {
   const rows = sid.rows, n = rows.length;
   if (n < SID_MIN_ROWS) return null;
-  const T = rows[n - 1].t, dt = T / (n - 1);
+  const span = rows[n - 1].t, dt = span / (n - 1);
+  const lines = ["# meta: " + JSON.stringify(sidCsvMeta(n, dt, extraMeta)),
+                 "t,theta1,theta2,dtheta1,dtheta2,tau1,tau2"];
+  return lines.concat(sidResampledLines(rows, dt)).join("\n") + "\n";
+}
+function sidCsvMeta(n, dt, extraMeta) {
   const meta = {
     source: "shortor-web acrobot sysid",
     captured: new Date().toISOString(),
@@ -5821,21 +6037,28 @@ function sidBuildCsv(extraMeta) {
   if (sid.beginInfo) meta.excitation = Object.assign(
     { pattern: "chirp 0.15-1.2 Hz + 0.25 s held-random, per-run fw seed" }, sid.beginInfo);
   if (extraMeta) Object.assign(meta, extraMeta);
-  const g = v => String(+v.toPrecision(9));
-  const lines = ["# meta: " + JSON.stringify(meta),
-                 "t,theta1,theta2,dtheta1,dtheta2,tau1,tau2"];
-  let j = 0;
-  for (let k = 0; k < n; k++) {
+  return meta;
+}
+// CSV data lines on the uniform grid t = k·dt: states linearly interpolated,
+// torque zero-order-held (tau1 ≡ 0, passive shoulder).
+function sidResampledLines(rows, dt) {
+  const out = [];
+  let seg = 0;   // raw sample at/before t (rows[seg]..rows[seg + 1] brackets it)
+  for (let k = 0; k < rows.length; k++) {
     const t = k * dt;
-    while (j < n - 2 && rows[j + 1].t <= t) j++;
-    const a = rows[j], b = rows[j + 1] || a;
-    const f = b.t > a.t ? Math.min(Math.max((t - a.t) / (b.t - a.t), 0), 1) : 0;
-    const L = (x, y) => x + (y - x) * f;
-    const tau2 = t >= b.t ? b.tau : a.tau;   // ZOH — hold, never lerp, the torque
-    lines.push([g(t), g(L(a.th1, b.th1)), g(L(a.th2, b.th2)),
-                g(L(a.w1, b.w1)), g(L(a.w2, b.w2)), "0", g(tau2)].join(","));
+    while (seg < rows.length - 2 && rows[seg + 1].t <= t) seg++;
+    out.push(sidCsvLine(t, rows[seg], rows[seg + 1] || rows[seg]));
   }
-  return lines.join("\n") + "\n";
+  return out;
+}
+const sig9 = v => String(+v.toPrecision(9));   // 9 significant digits, no trailing zeros
+// CSV line at time t between raw samples prev and next.
+function sidCsvLine(t, prev, next) {
+  const frac = next.t > prev.t ? Math.min(Math.max((t - prev.t) / (next.t - prev.t), 0), 1) : 0;
+  const lerp = key => prev[key] + (next[key] - prev[key]) * frac;
+  const tau2 = t >= next.t ? next.tau : prev.tau;   // ZOH — hold, never lerp, the torque
+  return [sig9(t), sig9(lerp("th1")), sig9(lerp("th2")),
+          sig9(lerp("w1")), sig9(lerp("w2")), "0", sig9(tau2)].join(",");
 }
 
 // acxa/acxs — excitation amplitude + duration. Bespoke slider rows that SEND
@@ -5856,21 +6079,15 @@ const sidParamEls = {};
   if (!wrap) return;
   for (const name in SID_PARAMS) {
     const m = SID_PARAMS[name];
-    const row = document.createElement("div"); row.className = "slider-row";
-    const lbl = document.createElement("label"); lbl.textContent = m.label;
-    const val = document.createElement("span"); val.className = "value";
+    const { row, val } = makeSliderRow(m.label);
     val.textContent = m.fmt(m.def);
     const sld = document.createElement("input");
     sld.type = "range"; sld.className = "needs-conn";
     sld.min = m.min; sld.max = m.max; sld.step = m.step; sld.value = m.def;
-    row.appendChild(lbl); row.appendChild(val); row.appendChild(sld);
+    row.appendChild(sld);
     wrap.appendChild(row);
     const rec = sidParamEls[name] = { slider: sld, valEl: val, fmt: m.fmt, row, label: m.label,
-      commit(v) {
-        val.textContent = m.fmt(v);
-        tunState[name] = v;
-        pendingSends[`__tun_${name}`] = { kind: "Cu", name, val: v };
-      } };
+      commit(v) { val.textContent = m.fmt(v); queueTun(name, v); } };
     sld.addEventListener("input", () => rec.commit(parseFloat(sld.value)));
     acroNudgeRegister(name, rec);   // steppers work here too; no detent (0 = "auto" is the slider end)
   }
@@ -5905,13 +6122,8 @@ const btnSidDl = document.getElementById("btnAcroSysidDl");
 if (btnSidDl) btnSidDl.onclick = () => {
   const csv = sidBuildCsv();
   if (!csv) return log("No sysID run captured.", "bad");
-  const ts = new Date(), p = v => String(v).padStart(2, "0");
-  const name = `acro_sysid_${ts.getFullYear()}${p(ts.getMonth() + 1)}${p(ts.getDate())}`
-             + `-${p(ts.getHours())}${p(ts.getMinutes())}${p(ts.getSeconds())}.csv`;
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-  const a = document.createElement("a");
-  a.href = url; a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  const name = stampedFileName("acro_sysid", "csv");
+  downloadBlob(new Blob([csv], { type: "text/csv" }), name);
   log(`SysID log saved as ${name} — upload it to the gymbot SysID app `
     + "(WSL: sysid_app.py → http://127.0.0.1:8321).", "ok");
 };
@@ -5938,12 +6150,16 @@ async function sidBatchStart() {
     return;
   sidWarnGates();
   sidBatch.active = true; sidBatch.cancel = false; sidBatch.runs = []; sidBatch.fails = 0;
-  const zb = document.getElementById("btnAcroSysidZip"); if (zb) zb.disabled = true;
-  const bb = document.getElementById("btnAcroSysidBatch"); if (bb) bb.disabled = true;
-  const rb = document.getElementById("btnAcroSysid"); if (rb) rb.disabled = true;
-  const st = document.getElementById("btnAcroSysidStop"); if (st) st.hidden = false;
+  sidBatchButtons(true, false);
   log(`SysID batch — collecting ${sidBatch.target} uniquely-excited runs…`, "ok");
   sidBatchNext();
+}
+// Batch buttons: while running, Run/Batch/Zip are greyed and Stop shows;
+// when idle they re-enable (Zip only once runs are banked).
+function sidBatchButtons(running, zipReady) {
+  const zb = document.getElementById("btnAcroSysidZip"); if (zb) zb.disabled = !zipReady;
+  const bb = document.getElementById("btnAcroSysidBatch"); if (bb) bb.disabled = running;
+  sidButtons(running);   // Run disabled + Stop shown while running
 }
 
 // Settle-wait → run → (sidStop → sidBatchRunDone) → back here. 200 ms poll on
@@ -5957,37 +6173,37 @@ function sidBatchNext() {
   sidPill(`batch ${idx}/${sidBatch.target}: waiting for settled hang…`, "pill warn");
   let heldMs = 0; const t0 = performance.now();
   clearInterval(sidBatch.timer);
-  sidBatch.timer = setInterval(async () => {
+  sidBatch.timer = setInterval(() => {
     if (!sidBatch.active) return clearInterval(sidBatch.timer);
     if (sidBatch.cancel) { clearInterval(sidBatch.timer); return sidBatchEnd("cancelled"); }
     if (performance.now() - t0 > SID_SETTLE_TIMEOUT_MS) {
       clearInterval(sidBatch.timer);
       return sidBatchEnd("settle timeout — links never came to rest");
     }
-    const fresh = acroState.valid && (performance.now() - acroState.t) < 1000;
-    const settled = fresh && Math.abs(acroState.q2) > SID_SETTLE_Q_DEG &&
-                    Math.abs(acroState.w1) < SID_SETTLE_W_DPS &&
-                    Math.abs(acroState.w2) < SID_SETTLE_W_DPS;
-    heldMs = settled ? heldMs + 200 : 0;
+    heldMs = acroSettledNow() ? heldMs + 200 : 0;
     if (heldMs < SID_SETTLE_HOLD_MS) return;
     clearInterval(sidBatch.timer);
-    sid.onFinalize = sidBatchRunDone;
-    sidPill(`batch ${idx}/${sidBatch.target}: exciting…`, "pill warn");
-    if (!await sidBeginRun()) { sid.onFinalize = null; sidBatchEnd("AX send failed"); }
+    sidBatchLaunchRun(idx);
   }, 200);
+}
+// Fresh (<1 s old) motion sample at a settled hang — the fw AX gate's thresholds.
+function acroSettledNow() {
+  const fresh = acroState.valid && (performance.now() - acroState.t) < 1000;
+  return fresh && Math.abs(acroState.q2) > SID_SETTLE_Q_DEG &&
+         Math.abs(acroState.w1) < SID_SETTLE_W_DPS &&
+         Math.abs(acroState.w2) < SID_SETTLE_W_DPS;
+}
+async function sidBatchLaunchRun(idx) {
+  sid.onFinalize = sidBatchRunDone;
+  sidPill(`batch ${idx}/${sidBatch.target}: exciting…`, "pill warn");
+  if (!await sidBeginRun()) { sid.onFinalize = null; sidBatchEnd("AX send failed"); }
 }
 
 function sidBatchRunDone(reason, ok, n, dur) {
   if (!sidBatch.active) return;
   sid.onFinalize = null;   // re-armed per run by sidBatchNext
-  const idx = sidBatch.runs.length + 1;
   if (ok) {
-    const csv = sidBuildCsv({ batch_run: idx, batch_of: sidBatch.target, run_end: reason });
-    if (csv) {
-      sidBatch.runs.push({ name: `run${String(idx).padStart(2, "0")}.csv`, text: csv });
-      sidBatch.fails = 0;
-      log(`SysID batch: run ${idx}/${sidBatch.target} banked (${n} samples, ${dur.toFixed(1)} s, ${reason}).`, "ok");
-    }
+    sidBatchBank(reason, n, dur);
   } else {
     sidBatch.fails++;
     log(`SysID batch: attempt failed (${reason}) — ${sidBatch.fails}/3 consecutive.`, "warn");
@@ -5995,16 +6211,22 @@ function sidBatchRunDone(reason, ok, n, dur) {
   }
   sidBatchNext();
 }
+// Bank the just-finished run as runNN.csv, stamped with its batch position.
+function sidBatchBank(reason, n, dur) {
+  const idx = sidBatch.runs.length + 1;
+  const csv = sidBuildCsv({ batch_run: idx, batch_of: sidBatch.target, run_end: reason });
+  if (!csv) return;
+  sidBatch.runs.push({ name: `run${String(idx).padStart(2, "0")}.csv`, text: csv });
+  sidBatch.fails = 0;
+  log(`SysID batch: run ${idx}/${sidBatch.target} banked (${n} samples, ${dur.toFixed(1)} s, ${reason}).`, "ok");
+}
 
 function sidBatchEnd(reason) {
   if (!sidBatch.active) return;
   clearInterval(sidBatch.timer);
   sidBatch.active = false; sid.onFinalize = null;
   const k = sidBatch.runs.length;
-  const bb = document.getElementById("btnAcroSysidBatch"); if (bb) bb.disabled = false;
-  const rb = document.getElementById("btnAcroSysid"); if (rb) rb.disabled = false;
-  const st = document.getElementById("btnAcroSysidStop"); if (st) st.hidden = true;
-  const zb = document.getElementById("btnAcroSysidZip"); if (zb) zb.disabled = (k === 0);
+  sidBatchButtons(false, k > 0);
   sidPill(`batch ${reason}: ${k}/${sidBatch.target} runs banked`,
           k >= sidBatch.target ? "pill ok" : (k ? "pill warn" : "pill bad"));
   log(`SysID batch ${reason} — ${k} run${k === 1 ? "" : "s"} banked` +
@@ -6030,33 +6252,63 @@ function crc32(bytes) {
   for (let i = 0; i < bytes.length; i++) c = _crcTable[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
+// Little-endian u16 / u32 fields.
+const zipU16 = v => new Uint8Array([v & 255, (v >> 8) & 255]);
+const zipU32 = v => new Uint8Array([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]);
+// MS-DOS time/date words (local time, 2 s resolution) for the entry headers.
+function zipDosStamp(now) {
+  return {
+    time: ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xFFFF,
+    date: (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xFFFF,
+  };
+}
 function makeZip(files) {   // files: [{name, text}] → Blob
-  const enc = new TextEncoder();
-  const u16 = v => new Uint8Array([v & 255, (v >> 8) & 255]);
-  const u32 = v => new Uint8Array([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]);
-  const now = new Date();
-  const dosTime = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xFFFF;
-  const dosDate = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xFFFF;
+  const stamp = zipDosStamp(new Date());
   const parts = [], entries = [];
   let offset = 0;
   for (const f of files) {
-    const name = enc.encode(f.name), data = enc.encode(f.text), crc = crc32(data);
-    parts.push(u32(0x04034b50), u16(20), u16(0), u16(0), u16(dosTime), u16(dosDate),
-               u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0),
-               name, data);
-    entries.push({ name, data, crc, offset });
+    const name = enc.encode(f.name), data = enc.encode(f.text);
+    const e = { name, data, crc: crc32(data), offset };
+    parts.push(...zipLocalHeader(e, stamp), name, data);
+    entries.push(e);
     offset += 30 + name.length + data.length;
   }
   const cdStart = offset;
   for (const e of entries) {
-    parts.push(u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(dosTime), u16(dosDate),
-               u32(e.crc), u32(e.data.length), u32(e.data.length), u16(e.name.length),
-               u16(0), u16(0), u16(0), u16(0), u32(0), u32(e.offset), e.name);
+    parts.push(...zipCentralHeader(e, stamp), e.name);
     offset += 46 + e.name.length;
   }
-  parts.push(u32(0x06054b50), u16(0), u16(0), u16(entries.length), u16(entries.length),
-             u32(offset - cdStart), u32(cdStart), u16(0));
+  parts.push(...zipEndRecord(entries.length, offset - cdStart, cdStart));
   return new Blob(parts, { type: "application/zip" });
+}
+// Local file header (30 bytes, then the name): version 2.0, STORE, no extra.
+function zipLocalHeader(e, stamp) {
+  return [zipU32(0x04034b50), zipU16(20), zipU16(0), zipU16(0), zipU16(stamp.time), zipU16(stamp.date),
+          zipU32(e.crc), zipU32(e.data.length), zipU32(e.data.length), zipU16(e.name.length), zipU16(0)];
+}
+// Central-directory header (46 bytes, then the name) pointing at the local one.
+function zipCentralHeader(e, stamp) {
+  return [zipU32(0x02014b50), zipU16(20), zipU16(20), zipU16(0), zipU16(0), zipU16(stamp.time), zipU16(stamp.date),
+          zipU32(e.crc), zipU32(e.data.length), zipU32(e.data.length), zipU16(e.name.length),
+          zipU16(0), zipU16(0), zipU16(0), zipU16(0), zipU32(0), zipU32(e.offset)];
+}
+// End-of-central-directory record.
+function zipEndRecord(count, cdSize, cdStart) {
+  return [zipU32(0x06054b50), zipU16(0), zipU16(0), zipU16(count), zipU16(count),
+          zipU32(cdSize), zipU32(cdStart), zipU16(0)];
+}
+// "<prefix>_YYYYMMDD-HHMMSS.<ext>" in local time, for saved logs.
+function stampedFileName(prefix, ext) {
+  const ts = new Date(), p = v => String(v).padStart(2, "0");
+  return `${prefix}_${ts.getFullYear()}${p(ts.getMonth() + 1)}${p(ts.getDate())}`
+       + `-${p(ts.getHours())}${p(ts.getMinutes())}${p(ts.getSeconds())}.${ext}`;
+}
+// Save a Blob through a temporary object URL (revoked after 5 s).
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
 const btnSidBatch = document.getElementById("btnAcroSysidBatch");
@@ -6064,13 +6316,8 @@ if (btnSidBatch) btnSidBatch.onclick = sidBatchStart;
 const btnSidZip = document.getElementById("btnAcroSysidZip");
 if (btnSidZip) btnSidZip.onclick = () => {
   if (!sidBatch.runs.length) return log("No batch runs banked.", "bad");
-  const ts = new Date(), p = v => String(v).padStart(2, "0");
-  const name = `acro_sysid_batch_${ts.getFullYear()}${p(ts.getMonth() + 1)}${p(ts.getDate())}`
-             + `-${p(ts.getHours())}${p(ts.getMinutes())}${p(ts.getSeconds())}.zip`;
-  const url = URL.createObjectURL(makeZip(sidBatch.runs));
-  const a = document.createElement("a");
-  a.href = url; a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  const name = stampedFileName("acro_sysid_batch", "zip");
+  downloadBlob(makeZip(sidBatch.runs), name);
   log(`SysID batch saved as ${name} (${sidBatch.runs.length} runs) — unzip and fit in the gymbot app.`, "ok");
 };
 
