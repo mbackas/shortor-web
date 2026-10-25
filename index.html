@@ -1668,7 +1668,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // hash) for offline/local copies. Drives the header readout and the
 // background tint, which cycles red→green→blue per build so each update is
 // visually distinct.
-const APP_BUILD = { id: "1bda450+", date: "2026-10-24" };
+const APP_BUILD = { id: "ec74a9a+", date: "2026-10-24" };
 const APP_TINTS = ["248 81 73", "63 185 80", "88 166 255"];  // red → green → blue
 
 // BLE GATT minimal: one writable ASCII command char alongside the HID
@@ -1937,7 +1937,7 @@ function syncCfgInput(id, text) {
   const el = document.getElementById(id);
   if (el && document.activeElement !== el) el.value = text;
 }
-const showWaThr = v => setText("cfgWaThrVal", `${v.toFixed(2)} g/V`);
+const showWaThreshold = gPerV => setText("cfgWaThrVal", `${gPerV.toFixed(2)} g/V`);
 function syncProbeF(hz) {
   if (isMissing(hz)) return;
   cfgProbeF = hz;
@@ -1947,7 +1947,7 @@ function syncWaThr(v) {
   if (isMissing(v)) return;
   cfgWaThr = v;
   syncCfgInput("cfgWaThr", String(v));
-  showWaThr(v);
+  showWaThreshold(v);
 }
 
 // Shared log-frequency x-axis so the overlay and delta charts read as one
@@ -1975,15 +1975,19 @@ function sweepLogAxis(ctx, dpr, pad, w, h, lo, hi) {
   ctx.font = `${10 * dpr}px 'IBM Plex Mono', monospace`;
   for (const f of sweepXTicks(lo, hi)) {
     const x = X(f);
-    ctx.strokeStyle = "#18242a"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
-    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
-    ctx.setLineDash([]);
+    sweepVRule(ctx, x, pad, h, "#18242a", 1, [2, 4]);
     ctx.textAlign = "center"; ctx.textBaseline = "top";
     ctx.fillText(String(f), x, h - pad.b + 4 * dpr);
   }
   ctx.textAlign = "right"; ctx.textBaseline = "bottom";
   ctx.fillText("Hz", w - pad.r, h - 1 * dpr);
   return X;
+}
+// Dashed full-height vertical rule at x (plot area pad.t .. h − pad.b).
+function sweepVRule(ctx, x, pad, h, color, width, dash) {
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash);
+  ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
+  ctx.setLineDash([]);
 }
 
 function updateSweepPicker() {
@@ -2093,7 +2097,7 @@ function clearSweep() {
 function refreshSweep() { renderSweepTable(); drawSweepCharts(); }
 
 const sweepMetricDef = () => SWEEP_METRICS.find(m => m.k === sweepMetric) || SWEEP_METRICS[0];
-const sweepFmt = (v, dp) => isMissing(v) ? "·" : v.toFixed(dp);
+const sweepCellText = (v, dp) => isMissing(v) ? "·" : v.toFixed(dp);
 // Distinct frequencies of a set of {f} items, ascending.
 const sweepSortedFreqs = items => [...new Set(items.map(x => x.f).filter(v => v != null))].sort((a, b) => a - b);
 // f → first row at that frequency (the row rows.find would pick), built once
@@ -2103,7 +2107,8 @@ function sweepRowIndex(run) {
   if (run) for (const x of run.rows) if (!index.has(x.f)) index.set(x.f, x);
   return index;
 }
-const sweepValAt = (index, f, k) => { const row = index.get(f); return row ? row[k] : null; };
+// Metric value at frequency f from a sweepRowIndex map, or null if no row there.
+const sweepMetricAt = (rowIndex, f, metric) => { const row = rowIndex.get(f); return row ? row[metric] : null; };
 // Air/ground pairs (one per grip) where both conditions were captured.
 function sweepGripPairs() {
   const pairs = [];
@@ -2116,7 +2121,7 @@ function sweepGripPairs() {
 }
 // air − ground of metric k at f, or null if either side lacks it.
 function sweepSepAt(pair, f, k) {
-  const gv = sweepValAt(pair.ground, f, k), av = sweepValAt(pair.air, f, k);
+  const gv = sweepMetricAt(pair.ground, f, k), av = sweepMetricAt(pair.air, f, k);
   return (gv == null || av == null) ? null : av - gv;
 }
 // Probe tone of an applied/saved (not rejected) pairing, else null.
@@ -2137,7 +2142,7 @@ function renderSweepTable() {
              + pairs.map(p => `<th>Δ${p.grip}</th>`).join("") + "</tr>";
   let rows = "";
   for (const f of freqs) {
-    rows += `<tr><td>${f}</td>` + capIndex.map(ix => `<td>${sweepFmt(sweepValAt(ix, f, M.k), M.dp)}</td>`).join("");
+    rows += `<tr><td>${f}</td>` + capIndex.map(ix => `<td>${sweepCellText(sweepMetricAt(ix, f, M.k), M.dp)}</td>`).join("");
     for (const p of pairs) {
       const d = sweepSepAt(p, f, M.k);
       rows += `<td class="sweep-delta">${d == null ? "·" : signedFixed(d, M.dp)}</td>`;
@@ -2153,14 +2158,14 @@ function sweepResultNote() {
   const r = sweepResult;
   if (!r) return "";
   if (r.rejected) {
-    return ` · rejected (wa ratio ${sweepFmt(r.wa_ratio, 2)}`
-         + (r.wa_min != null ? ` < ${sweepFmt(r.wa_min, 2)}` : "")
+    return ` · rejected (wa ratio ${sweepCellText(r.wa_ratio, 2)}`
+         + (r.wa_min != null ? ` < ${sweepCellText(r.wa_min, 2)}` : "")
          + ` — same condition twice?)`;
   }
   if (r.f != null) {
     return ` · ${r.saved ? "saved" : "applied"} @ ${r.f}Hz `
-         + `wa_thr=${sweepFmt(r.wa_thr, 3)} ratio=${sweepFmt(r.ratio, 1)}×`
-         + ` (dφ_thr=${sweepFmt(r.dphi_thr, 0)})`;
+         + `wa_thr=${sweepCellText(r.wa_thr, 3)} ratio=${sweepCellText(r.ratio, 1)}×`
+         + ` (dφ_thr=${sweepCellText(r.dphi_thr, 0)})`;
   }
   return "";
 }
@@ -2228,7 +2233,7 @@ function sweepOverlayLegendHtml(caps) {
 function sweepTracePoints(run, freqs, k, X, Y) {
   const index = sweepRowIndex(run);
   return freqs.map(f => {
-    const v = sweepValAt(index, f, k);
+    const v = sweepMetricAt(index, f, k);
     return isMissing(v) ? null : { x: X(f), y: Y(v) };
   }).filter(Boolean);
 }
@@ -2243,9 +2248,7 @@ function sweepTrace(ctx, dpr, slot, pts) {
 }
 // Dashed vertical marker + label at the applied probe tone (x = X(f)).
 function sweepProbeMarker(ctx, dpr, pad, w, h, x, f) {
-  ctx.strokeStyle = "#e2ece9"; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([4, 3]);
-  ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
-  ctx.setLineDash([]);
+  sweepVRule(ctx, x, pad, h, "#e2ece9", 1.5 * dpr, [4, 3]);
   ctx.fillStyle = "#e2ece9"; ctx.textBaseline = "bottom"; ctx.textAlign = "center";
   ctx.fillText(`probe ${f}Hz`, Math.min(Math.max(x, pad.l + 26 * dpr), w - pad.r - 26 * dpr), h - pad.b - 1 * dpr);
 }
@@ -2294,7 +2297,9 @@ function sweepDeltaSeries(k) {
       const v = sweepSepAt(p, f, k);
       return v == null ? null : { f, v };
     }).filter(Boolean);
-    return data.length ? { grip: p.grip, ...SWEEP_GRIP_STYLE[p.grip], data } : null;
+    // byF: f → point (frequencies are distinct per series) for the bar loop.
+    return data.length ? { grip: p.grip, ...SWEEP_GRIP_STYLE[p.grip], data,
+                           byF: new Map(data.map(d => [d.f, d])) } : null;
   }).filter(Boolean);
 }
 function drawSweepDelta() {
@@ -2339,7 +2344,7 @@ function drawSweepDelta() {
   for (const f of freqs) {
     const cx = X(f), span = barW * nS;
     series.forEach((s, si) => {
-      const d = s.data.find(x => x.f === f);
+      const d = s.byF.get(f);
       if (!d) return;
       const bx = cx - span / 2 + barW * si;
       const by = Y(Math.max(Math.min(d.v, amax), -amax));
@@ -2482,66 +2487,20 @@ class BleTransport {
       log("FOC event channel unavailable: " + errMsg(e), "bad");
     }
   }
-  // Telemetry notify. 4 / 12 / 24 bytes (older → newer firmware):
-  //   [0..3]   world-frame shaft position (rad) = shaft_angle + g_tilt + offset.
-  //            NEVER the raw body-frame encoder angle — the firmware only
-  //            ever transmits the world-frame, tilt-compensated value.
-  //   [4..7]   VBUS (V)
-  //   [8..11]  torque cmd (V)
-  //   [12..15] tilt (rad)
-  //   [16..19] tilt_dot (rad/s)
-  //   [20..23] mode (0=haptic, 1=balance) as float
+  // Telemetry notify: each field group is handled once the packet is long
+  // enough to carry it (older firmware sends shorter packets).
   _onTelemetryPacket(dv) {
-    const angle = dv.getFloat32(0, true);   // [0] balance-compensated (cart/balance visual)
-    balanceLive.shaftAngle = angle;
-    // [13] @52 = RAW shaft_angle (clean knob spin that drives the HID scroll)
-    // → the scroll-practice ring. [0] is offset by tilt/balance so it isn't
-    // the true spin; fall back to it on older 52-byte packets.
-    onLiveAngle(dv.byteLength >= 56 ? dv.getFloat32(52, true) : angle);
-    if (dv.byteLength >= 12) {
-      const vbus = dv.getFloat32(4, true);
-      onTelem(dv.getFloat32(8, true));   // torque cmd
-      setText("liveVoltage", `V = ${vbus.toFixed(2)}`);
-    }
-    if (dv.byteLength >= 24) {
-      const tilt = dv.getFloat32(12, true);
-      const tiltDot = dv.getFloat32(16, true);   // [4] tilt_dot (rad/s)
-      const mode = Math.round(dv.getFloat32(20, true));
-      setText("liveTilt", `tilt = ${toDeg(tilt).toFixed(1)}°`);
-      onTiltRate(tiltDot);
-      updateModePill(mode);
-      balanceLive.tilt = tilt;
-      balanceLive.mode = mode;
-    }
-    if (dv.byteLength >= 28) {
-      balanceLive.posErrSat = dv.getFloat32(24, true);
-    }
-    if (dv.byteLength >= 32) {
-      onTiltBias(dv.getFloat32(28, true));
-    }
+    applyBalanceTelemetry(dv);                               // [0..31], 4..32 bytes
     if (dv.byteLength >= 48) this._onImuEventCounters(dv);
     // 52-byte packet: pkt[12] @48 = battery SOC%. <0 → unknown/USB.
-    if (dv.byteLength >= 52) {
-      onBatterySoc(dv.getFloat32(48, true));
-    }
+    if (dv.byteLength >= 52) onBatterySoc(f32le(dv, 48));
     // 64-byte packet: u32 seq @56 (one per notify — drop detection) +
     // u32 t_ms @60 (fw millis at send — pacing/latency split). Older
     // 56-byte firmware → nulls; arrival time is still measured.
-    onPktMeta(dv.byteLength >= 64 ? dv.getUint32(56, true) : null,
-              dv.byteLength >= 64 ? dv.getUint32(60, true) : null);
-    // 80-byte packet (fw ≥1834, plant=1 only): acro state at the full
-    // ~60 Hz stream rate — f32 qimu(deg)@64, wimu(deg/s)@68, sh(deg)@72,
-    // wsh(deg/s)@76. Same values/units as the [ACRO] line, which remains
-    // authoritative for hang=/st= — this drives only the motion (figure,
-    // pills, plots), still rendered raw per the operator decision.
-    if (dv.byteLength >= 80) {
-      const m = readAcroMotion(dv);
-      acroApplyMotion(m.qimu, m.wimu, m.sh, m.wsh);
-      // SysID recorder — captures this same sample on the fw t_ms timebase;
-      // reads the applied elbow torque @80 when the (proposed) 84-byte
-      // packet arrives. No-op unless a recording is running.
-      sidOnPacket(dv);
-    }
+    const hasSeq = dv.byteLength >= 64;
+    onPktMeta(hasSeq ? dv.getUint32(56, true) : null,
+              hasSeq ? dv.getUint32(60, true) : null);
+    if (dv.byteLength >= 80) applyAcroTelemetry(dv);
     startTwinAnim();   // 60 fps loop eases the twin toward this sample
   }
   // 48-byte packet (this board rev — QVAR slot removed because
@@ -2549,10 +2508,10 @@ class BleTransport {
   // Edge-detect against the previous sample so each increment
   // emits a console event line.
   _onImuEventCounters(dv) {
-    const tap  = dv.getFloat32(32, true);
-    const dtap = dv.getFloat32(36, true);
-    const ff   = dv.getFloat32(40, true);
-    const wake = dv.getFloat32(44, true);
+    const tap  = f32le(dv, 32);
+    const dtap = f32le(dv, 36);
+    const ff   = f32le(dv, 40);
+    const wake = f32le(dv, 44);
     setText("liveTap", `taps ${tap|0}/${dtap|0}`);
     setText("liveFFWake", `ff/wk ${ff|0}/${wake|0}`);
     if (this._prevTap  !== undefined && tap  > this._prevTap)  log("← TAP");
@@ -2643,6 +2602,57 @@ class BleTransport {
   isConnected() { return !!(this.device && this.device.gatt.connected); }
 }
 
+// Little-endian f32 at a byte offset of a telemetry packet.
+const f32le = (dv, offset) => dv.getFloat32(offset, true);
+// Telemetry [0..31]. 4 / 12 / 24 bytes (older → newer firmware):
+//   [0..3]   world-frame shaft position (rad) = shaft_angle + g_tilt + offset.
+//            NEVER the raw body-frame encoder angle — the firmware only
+//            ever transmits the world-frame, tilt-compensated value.
+//   [4..7]   VBUS (V)
+//   [8..11]  torque cmd (V)
+//   [12..15] tilt (rad)
+//   [16..19] tilt_dot (rad/s)
+//   [20..23] mode (0=haptic, 1=balance) as float
+// then posErrSat @24 and the tilt bias @28.
+function applyBalanceTelemetry(dv) {
+  const angle = f32le(dv, 0);   // [0] balance-compensated (cart/balance visual)
+  balanceLive.shaftAngle = angle;
+  // [13] @52 = RAW shaft_angle (clean knob spin that drives the HID scroll)
+  // → the scroll-practice ring. [0] is offset by tilt/balance so it isn't
+  // the true spin; fall back to it on older 52-byte packets.
+  onLiveAngle(dv.byteLength >= 56 ? f32le(dv, 52) : angle);
+  if (dv.byteLength >= 12) {
+    const vbus = f32le(dv, 4);
+    onTelem(f32le(dv, 8));   // torque cmd
+    setText("liveVoltage", `V = ${vbus.toFixed(2)}`);
+  }
+  if (dv.byteLength >= 24) {
+    const tilt = f32le(dv, 12);
+    const tiltDot = f32le(dv, 16);   // [4] tilt_dot (rad/s)
+    const mode = Math.round(f32le(dv, 20));
+    setText("liveTilt", `tilt = ${toDeg(tilt).toFixed(1)}°`);
+    onTiltRate(tiltDot);
+    updateModePill(mode);
+    balanceLive.tilt = tilt;
+    balanceLive.mode = mode;
+  }
+  if (dv.byteLength >= 28) balanceLive.posErrSat = f32le(dv, 24);
+  if (dv.byteLength >= 32) onTiltBias(f32le(dv, 28));
+}
+// 80-byte packet (fw ≥1834, plant=1 only): acro state at the full
+// ~60 Hz stream rate — f32 qimu(deg)@64, wimu(deg/s)@68, sh(deg)@72,
+// wsh(deg/s)@76. Same values/units as the [ACRO] line, which remains
+// authoritative for hang=/st= — this drives only the motion (figure,
+// pills, plots), still rendered raw per the operator decision.
+function applyAcroTelemetry(dv) {
+  const m = readAcroMotion(dv);
+  acroApplyMotion(m.qimu, m.wimu, m.sh, m.wsh);
+  // SysID recorder — captures this same sample on the fw t_ms timebase;
+  // reads the applied elbow torque @80 when the (proposed) 84-byte
+  // packet arrives. No-op unless a recording is running.
+  sidOnPacket(dv);
+}
+
 // Seconds (1 dp) since a performance.now() stamp — the "up=" in drop logs.
 const upSecs = (t0) => Math.round((performance.now() - t0) / 100) / 10;
 
@@ -2655,7 +2665,7 @@ function onEventText(text) {
   // [HLT] — 3 s pipeline-health line (name=value pairs, parsed
   // generically so appended tokens are tolerated). Feeds the health
   // strip; suppressed from the console except regressions.
-  if (text.startsWith("[HLT]")) { onHlt(text); return; }
+  if (text.startsWith("[HLT]")) { onHealthLine(text); return; }
   updateLiftChips(text);
   // [SYS] <mode> <loop>/<main> soc=… armed=… dphi=… coh=… ld=…  (~every 3 s).
   // Absorbed silently (would otherwise spam the console).
@@ -2731,14 +2741,17 @@ function onSysLine(text) {
 // sh. Link 2 is DERIVED = qimu ± sh (sign from the acro-card flip
 // toggle). While fw ≥1834 streams the 80-byte packet, motion comes at
 // ~60 Hz from there and this line mostly matters for the flags.
-// \b on the key so num("sh") can't match inside "wsh=".
+// \b on the key so tokenNum("sh") can't match inside "wsh=".
 function onAcroLine(text) {
-  const num = k => { const m = text.match(new RegExp("\\b" + k + "=(-?[\\d.]+)")); return m ? parseFloat(m[1]) : null; };
-  const stM = text.match(/\bst=(\w+)/);
-  onAcro((num("hang") ?? 0) | 0,
-         num("qimu") ?? num("q2") ?? 0, num("wimu") ?? num("w2") ?? 0,
-         num("sh") ?? 0, num("wsh") ?? 0, stM ? stM[1] : null,
-         num("qacc"));   // accel-only diagnostic angle (fw (e)+; null if absent)
+  const tokenNum = key => {
+    const match = text.match(new RegExp("\\b" + key + "=(-?[\\d.]+)"));
+    return match ? parseFloat(match[1]) : null;
+  };
+  const taskMatch = text.match(/\bst=(\w+)/);
+  onAcro((tokenNum("hang") ?? 0) | 0,
+         tokenNum("qimu") ?? tokenNum("q2") ?? 0, tokenNum("wimu") ?? tokenNum("w2") ?? 0,
+         tokenNum("sh") ?? 0, tokenNum("wsh") ?? 0, taskMatch ? taskMatch[1] : null,
+         tokenNum("qacc"));   // accel-only diagnostic angle (fw (e)+; null if absent)
 }
 // [CAL] events: STALE / "probe freq=… set — re-run W" nudge the operator
 // to re-run the sweep; probe-freq / wa_thr echoes sync the param controls.
@@ -2896,21 +2909,30 @@ function showParamValue(p, sld, valEl, v) {
 let qWaiter = null;       // {resolve} for the next "Q ..." line over serial.
 let presetWaiter = null;  // {resolve} for the next "PRESETS ..." line.
 function onSerialLine(line) {
-  if (line.startsWith("torque:")) {
-    const v = parseFloat(line.slice(7));
-    if (!Number.isNaN(v)) { onTelem(v); return; }
-  }
+  if (line.startsWith("torque:") && onSerialTorque(line)) return;
+  if (takeSerialReply(line)) return;
+  if (line.length) log("← " + line);
+}
+// "torque:<V>" telemetry line; false when the value doesn't parse (then echoed).
+function onSerialTorque(line) {
+  const v = parseFloat(line.slice(7));
+  if (Number.isNaN(v)) return false;
+  onTelem(v);
+  return true;
+}
+// Hand a reply line to the request waiting for it; true when consumed.
+function takeSerialReply(line) {
   if (qWaiter && line.startsWith("Q ")) {
     const w = qWaiter; qWaiter = null;
     w.resolve(line);
-    return;   // don't echo the (periodic) Q reply to the console
+    return true;   // don't echo the (periodic) Q reply to the console
   }
   if (presetWaiter && line.startsWith("PRESETS ")) {
     const w = presetWaiter; presetWaiter = null;
     w.resolve(line.slice(8));   // strip the "PRESETS " prefix
-    return;
+    return true;
   }
-  if (line.length) log("← " + line);
+  return false;
 }
 function onDisconnect(reason) {
   log(`[DISCONNECT] ${reason || "unknown reason"}`, "bad");
@@ -3182,28 +3204,28 @@ const HLT_GLITCHES = { rdf: "IMU read failures", dtc: "estimator ticks >20 ms",
                        so5: "sense ticks late >5 ms" };
 const HLT_CUM_KEYS = [...Object.keys(HLT_GLITCHES), "atx", "adf"];
 
-function onHlt(text) {
-  const vals = parseHltTokens(text);
-  const num = k => { const v = parseFloat(vals[k]); return Number.isNaN(v) ? null : v; };
-  const delta = hltWindowDeltas(num);
-  hltGlitchPart(text, vals, delta, num("ctjmp") || 0);
-  hltLoopsPart(num("shz"), num("fhz"), num("lhz"));
+function onHealthLine(text) {
+  const tokens = parseNameValues(text);
+  const numOf = name => { const v = parseFloat(tokens[name]); return Number.isNaN(v) ? null : v; };
+  const delta = hltWindowDeltas(numOf);
+  hltGlitchPart(text, tokens, delta, numOf("ctjmp") || 0);
+  hltLoopsPart(numOf("shz"), numOf("fhz"), numOf("lhz"));
   // IMU staleness.
-  const age = num("age");
+  const age = numOf("age");
   if (age !== null) {
     setHealthPart("age", age > 50 ? 2 : age > 5 ? 1 : 0, `age ${age} ms`, `age ${age}ms`);
   }
   hltTxPart(delta.atx, delta.adf || 0);
-  if (vals.rst !== undefined) hltBootPart(vals.rst);
+  if (tokens.rst !== undefined) hltBootPart(tokens.rst);
   // Free-heap (informational — surfaces via the link tooltip, see ticker).
-  if (vals.heap !== undefined) linkStat.heap = vals.heap;
+  if (tokens.heap !== undefined) linkStat.heap = tokens.heap;
 }
 // Generic name=value parse — appended tokens tolerated.
-function parseHltTokens(text) {
-  const vals = {};
+function parseNameValues(text) {
+  const tokens = {};
   const re = /\b([A-Za-z_]\w*)=(-?[\w.]+)/g;
-  let m; while ((m = re.exec(text))) vals[m[1]] = m[2];
-  return vals;
+  let m; while ((m = re.exec(text))) tokens[m[1]] = m[2];
+  return tokens;
 }
 // Cumulative counters → per-window deltas (0 on first sight). A counter that
 // went backwards (fw reboot) re-baselines silently.
@@ -3221,71 +3243,84 @@ function hltWindowDeltas(num) {
   return delta;
 }
 // Glitches — per-window deltas, flag rising; ctjmp is already per-window.
-function hltGlitchPart(text, vals, delta, ctjmp) {
-  const H = hltStat;
-  let worstK = null, worstN = 0, anyReg = false;
+function hltGlitchPart(text, tokens, delta, ctjmp) {
+  let worstKey = null, worstRise = 0;
+  for (const counter of Object.keys(HLT_GLITCHES)) {
+    const rise = delta[counter] || 0;
+    if (rise > worstRise) { worstRise = rise; worstKey = counter; }
+  }
+  hltLogGlitchRises(text, tokens, delta);
+  if (ctjmp > worstRise) { worstRise = ctjmp; worstKey = "ctjmp"; }
+  const glitchPill = document.getElementById("hpGlitch");
+  if (glitchPill) glitchPill.title = hltGlitchTooltip(tokens, ctjmp);
+  setHealthPart("glitch", worstRise > 0 ? 1 : 0,
+                worstRise > 0 ? `glitch ${worstKey}+${worstRise}` : "glitch ✓",
+                `${worstKey}+${worstRise}`);
+}
+// Console lines for rising glitch counters.
+function hltLogGlitchRises(text, tokens, delta) {
   // Timing context on every regression line — smax (worst inter-tick gap) vs
   // sexe (worst step execution, fw (f)+) is the starvation discriminator.
-  const timing = ` (smax=${vals.smax ?? "?"}µs sexe=${vals.sexe ?? "?"}µs shz=${vals.shz ?? "?"} fhz=${vals.fhz ?? "?"})`;
+  const timing = ` (smax=${tokens.smax ?? "?"}µs sexe=${tokens.sexe ?? "?"}µs shz=${tokens.shz ?? "?"} fhz=${tokens.fhz ?? "?"})`;
   const now = performance.now();
-  for (const k of Object.keys(HLT_GLITCHES)) {
-    const d = delta[k] || 0;
-    if (d > worstN) { worstN = d; worstK = k; }
-    if (d > 0) {
-      anyReg = true;
-      // Rate-limit: a persistently-rising counter otherwise floods the console
-      // (2 lines / 3 s on the bench). First hit logs; repeats at most every
-      // 30 s — the glitch pill carries the ongoing state between lines.
-      if (!(k in H.regLogMs) || now - H.regLogMs[k] >= 30000) {
-        H.regLogMs[k] = now;
-        log(`[HLT] regression: ${k}+${d} — ${HLT_GLITCHES[k]} (lifetime ${H.life[k]})${timing}`, "warn");
-      }
+  let anyRise = false;
+  for (const counter of Object.keys(HLT_GLITCHES)) {
+    const rise = delta[counter] || 0;
+    if (!(rise > 0)) continue;
+    anyRise = true;
+    // Rate-limit: a persistently-rising counter otherwise floods the console
+    // (2 lines / 3 s on the bench). First hit logs; repeats at most every
+    // 30 s — the glitch pill carries the ongoing state between lines.
+    if (!(counter in hltStat.regLogMs) || now - hltStat.regLogMs[counter] >= 30000) {
+      hltStat.regLogMs[counter] = now;
+      log(`[HLT] regression: ${counter}+${rise} — ${HLT_GLITCHES[counter]} (lifetime ${hltStat.life[counter]})${timing}`, "warn");
     }
   }
   // While regressing, echo one RAW [HLT] line per 30 s so a console paste
   // carries the full window for cross-boundary diagnosis.
-  if (anyReg && (!H.rawLogMs || now - H.rawLogMs >= 30000)) {
-    H.rawLogMs = now;
+  if (anyRise && (!hltStat.rawLogMs || now - hltStat.rawLogMs >= 30000)) {
+    hltStat.rawLogMs = now;
     log(`← ${text}`);
   }
-  if (ctjmp > worstN) { worstN = ctjmp; worstK = "ctjmp"; }
-  const gEl = document.getElementById("hpGlitch");
-  if (gEl) gEl.title = "Glitch counters, Δ per 3 s window — lifetime totals: "
-    + Object.keys(HLT_GLITCHES).map(k => `${k}=${H.life[k] ?? "—"}`).join(" ")
-    + ` · ctjmp(win)=${ctjmp} · smax=${vals.smax ?? "—"}µs sexe=${vals.sexe ?? "—"}µs ctmax=${vals.ctmax ?? "—"}µs fmax=${vals.fmax ?? "—"}µs`;
-  setHealthPart("glitch", worstN > 0 ? 1 : 0,
-                worstN > 0 ? `glitch ${worstK}+${worstN}` : "glitch ✓",
-                `${worstK}+${worstN}`);
+}
+function hltGlitchTooltip(tokens, ctjmp) {
+  return "Glitch counters, Δ per 3 s window — lifetime totals: "
+    + Object.keys(HLT_GLITCHES).map(counter => `${counter}=${hltStat.life[counter] ?? "—"}`).join(" ")
+    + ` · ctjmp(win)=${ctjmp} · smax=${tokens.smax ?? "—"}µs sexe=${tokens.sexe ?? "—"}µs ctmax=${tokens.ctmax ?? "—"}µs fmax=${tokens.fmax ?? "—"}µs`;
 }
 // Loop rates — shz green 990–1010, lhz amber <300, fhz steady vs its median.
 function hltLoopsPart(shz, fhz, lhz) {
   if (shz === null) return;
-  const H = hltStat;
-  if (fhz !== null) {
-    H.fhzHist.push(fhz); if (H.fhzHist.length > 20) H.fhzHist.shift();
-  }
-  const fMed = H.fhzHist.length
-    ? [...H.fhzHist].sort((a, b) => a - b)[H.fhzHist.length >> 1] : fhz;
+  const fhzMedian = trackFhzMedian(fhz);
   const shzBad = shz < 900, shzWarn = shz < 990 || shz > 1010;
   const lhzWarn = lhz !== null && lhz < 300;
-  const fhzWarn = fhz !== null && fMed && Math.abs(fhz - fMed) > 0.15 * fMed;
-  const lvl = shzBad ? 2 : (shzWarn || lhzWarn || fhzWarn) ? 1 : 0;
-  const kilo = v => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`;
-  setHealthPart("loops", lvl, `loops ${shz}/${kilo(fhz ?? 0)}/${lhz ?? "—"}`,
-                shzBad || shzWarn ? `shz ${shz}` : lhzWarn ? `lhz ${lhz}` : `fhz ${fhz}`);
+  const fhzWarn = fhz !== null && fhzMedian && Math.abs(fhz - fhzMedian) > 0.15 * fhzMedian;
+  const level = shzBad ? 2 : (shzWarn || lhzWarn || fhzWarn) ? 1 : 0;
+  const offender = shzBad || shzWarn ? `shz ${shz}` : lhzWarn ? `lhz ${lhz}` : `fhz ${fhz}`;
+  setHealthPart("loops", level, `loops ${shz}/${kiloHz(fhz ?? 0)}/${lhz ?? "—"}`, offender);
 }
+// Add fhz (when present) to the last-20 history; returns the history's median,
+// or fhz itself while the history is empty.
+function trackFhzMedian(fhz) {
+  const hist = hltStat.fhzHist;
+  if (fhz !== null) {
+    hist.push(fhz); if (hist.length > 20) hist.shift();
+  }
+  return hist.length ? [...hist].sort((a, b) => a - b)[hist.length >> 1] : fhz;
+}
+const kiloHz = hz => hz >= 1000 ? `${(hz / 1000).toFixed(1)}k` : `${hz}`;   // 9000 → "9.0k"
 // Δatx (sent) vs received this window; adf = deferral episodes (not drops).
 function hltTxPart(sent, deferrals) {
-  if (sent !== undefined && hltStat.hadWin) {
-    const rx = linkStat.rxWin;
-    const deficit = sent - rx;
-    setHealthPart("tx", deficit > 5 ? 2 : deficit > 1 ? 1 : 0,
-                  `tx ${rx}/${sent}` + (deferrals ? ` adf+${deferrals}` : ""),
-                  `tx −${deficit}`);
-    if (deferrals > 0) log(`[HLT] adf+${deferrals} — link stall(s), freshest-frame skip (deferred, not dropped)`);
-  }
+  if (sent !== undefined && hltStat.hadWin) showTxAudit(sent, linkStat.rxWin, deferrals);
   hltStat.hadWin = true;
-  linkStat.rxWin = 0;
+  linkStat.rxWin = 0;   // the next window counts afresh
+}
+function showTxAudit(sent, received, deferrals) {
+  const deficit = sent - received;
+  setHealthPart("tx", deficit > 5 ? 2 : deficit > 1 ? 1 : 0,
+                `tx ${received}/${sent}` + (deferrals ? ` adf+${deferrals}` : ""),
+                `tx −${deficit}`);
+  if (deferrals > 0) log(`[HLT] adf+${deferrals} — link stall(s), freshest-frame skip (deferred, not dropped)`);
 }
 // Reset reason — fw-enumerated set (contract (d)): PWR/SW/SLEEP = normal,
 // OTHER = unknown (amber), PANIC/IWDT/TWDT/WDT/BROWN = the last reboot CRASHED.
@@ -3371,7 +3406,7 @@ function resetHealth() {
   Object.assign(hltStat, { prev: {}, life: {}, regLogMs: {}, rawLogMs: 0, hadWin: false, rstLogged: false });
   hltStat.fhzHist.length = 0;
   for (const [id, blank] of Object.values(HEALTH_PILLS)) setPill(id, blank, "pill");
-  for (const k of Object.keys(healthParts)) delete healthParts[k];
+  for (const part of Object.keys(healthParts)) delete healthParts[part];
   setPill("healthPill", "sys —", "pill");
   drawLatSpark([]);
 }
@@ -3625,32 +3660,25 @@ async function _openDB() {
     req.onerror   = () => rej(req.error);
   });
 }
-// One transaction on the firmware store; op(store, tx, done, fail) wires its
-// own completion event (request success vs transaction complete) to done/fail.
-async function _withFwStore(mode, op) {
-  const db = await _openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(FW_STORE, mode);
-    op(tx.objectStore(FW_STORE), tx, res, rej);
-  });
-}
-async function _loadFwHandle() {
+// One request in its own firmware-store transaction: act(store) issues it.
+// Resolves with the request's result once it succeeds — or, with commit, once
+// the transaction has committed — and with null on any failure (non-fatal).
+async function _fwStoreRequest(mode, act, commit = false) {
   try {
-    return await _withFwStore("readonly", (store, tx, done, fail) => {
-      const req = store.get(FW_KEY);
-      req.onsuccess = () => done(req.result || null);
-      req.onerror   = () => fail(req.error);
+    const db = await _openDB();
+    return await new Promise((res, rej) => {
+      const tx  = db.transaction(FW_STORE, mode);
+      const req = act(tx.objectStore(FW_STORE));
+      if (commit) { tx.oncomplete  = () => res(req.result); tx.onerror  = () => rej(tx.error); }
+      else        { req.onsuccess  = () => res(req.result); req.onerror = () => rej(req.error); }
     });
   } catch (e) { return null; }
 }
+async function _loadFwHandle() {
+  return (await _fwStoreRequest("readonly", store => store.get(FW_KEY))) || null;
+}
 async function _saveFwHandle(handle) {
-  try {
-    await _withFwStore("readwrite", (store, tx, done, fail) => {
-      store.put(handle, FW_KEY);
-      tx.oncomplete = () => done();
-      tx.onerror    = () => fail(tx.error);
-    });
-  } catch (e) { /* non-fatal */ }
+  await _fwStoreRequest("readwrite", store => store.put(handle, FW_KEY), true);
 }
 async function _fileFromHandle(handle) {
   if (!handle) return null;
@@ -4259,39 +4287,42 @@ function buildTunRow(name, val) {
   setText("tunHint", "Changes apply live; Save to knob (Tune) to persist.");
   return rec;
 }
+// A registry control: an <input> of the given type appended to host that,
+// on `event`, queues read(input) — unless read returns null (rejected edit).
+function makeTunInput(name, type, host, event, read) {
+  const input = document.createElement("input");
+  input.type = type;
+  host.appendChild(input);
+  input.addEventListener(event, () => { const v = read(input); if (v !== null) queueTun(name, v); });
+  return input;
+}
 // boolean tunable → toggle that sends 1/0
 function makeTunToggle(name, val, valEl) {
-  const input = document.createElement("input");
-  input.type = "checkbox"; input.checked = (val != 0);
-  valEl.appendChild(input);
-  input.addEventListener("change", () => queueTun(name, input.checked ? 1 : 0));
+  const input = makeTunInput(name, "checkbox", valEl, "change", el => el.checked ? 1 : 0);
+  input.checked = (val != 0);
   return input;
 }
 function makeTunSlider(name, val, meta, row, valEl) {
-  const input = document.createElement("input");
-  input.type = "range"; input.min = meta.min;
+  const input = makeTunInput(name, "range", row, "input", el => {
+    const v = parseFloat(el.value);
+    valEl.textContent = tunFmt(v, meta);
+    return v;
+  });
+  input.min = meta.min;
   input.max = Math.max(meta.max, val);   // expand to fit an out-of-range value
   input.step = meta.step; input.value = val;
-  row.appendChild(input);
   valEl.textContent = tunFmt(val, meta);
-  input.addEventListener("input", () => {
-    const v = parseFloat(input.value);
-    valEl.textContent = tunFmt(v, meta);
-    queueTun(name, v);
-  });
   return input;
 }
 function makeTunNumber(name, val, valEl) {
-  const input = document.createElement("input");
-  input.type = "number"; input.step = "any";
+  const input = makeTunInput(name, "number", valEl, "change", el => {
+    const v = parseFloat(el.value);
+    if (!isFinite(v)) { el.value = tunState[name]; return null; }
+    return v;
+  });
+  input.step = "any";
   input.style.width = "7ch"; input.style.textAlign = "right";
   input.value = val;
-  valEl.appendChild(input);
-  input.addEventListener("change", () => {
-    const v = parseFloat(input.value);
-    if (!isFinite(v)) { input.value = tunState[name]; return; }
-    queueTun(name, v);
-  });
   return input;
 }
 // Wire value → an existing registry control (range max grows to fit).
@@ -4398,7 +4429,10 @@ async function verifyGains() {
     const raw = await transport.readParams();
     if (!raw) return;
     const rv = parseBlobValues(raw);
-    const fixed = requeueDriftedHaptic(rv) + requeueDriftedLqr(rv);
+    const fixed =
+      requeueDrifted(rv, PARAMS, p => (p.key === "b_couple") ? effectiveBCouple() : paramState[p.key],
+                     (p, v) => { pendingSends[p.key] = v; return true; })
+      + requeueDrifted(rv, LQR_PARAMS, p => lqrState[p.key], queueLqrSend);
     if (fixed) log(`Gain check: knob had drifted on ${fixed} value(s) — re-sent.`, "warn");
   } catch (e) {
     /* read failed (timeout / mid-reconnect) — try again next cycle */
@@ -4406,29 +4440,21 @@ async function verifyGains() {
     verifyBusy = false;
   }
 }
-// Re-queue each haptic param whose knob value (rv: token → value) drifted
-// from the UI's; returns how many were re-queued.
-function requeueDriftedHaptic(rv) {
+// Re-queue each param whose knob value (rv: token → value) drifted from the
+// UI's: uiValueOf(p) is the value the UI wants, queue(p, v) re-sends it (and
+// returns whether it did). Returns how many were re-queued.
+function requeueDrifted(rv, params, uiValueOf, queue) {
   let fixed = 0;
-  for (const p of PARAMS) {
+  for (const p of params) {
     const tok = PARAM_TOKEN[p.key];
     if (!tok || !(tok in rv)) continue;
-    const uiVal = (p.key === "b_couple") ? effectiveBCouple() : paramState[p.key];
-    if (!gainMatches(rv[tok], uiVal)) { pendingSends[p.key] = uiVal; fixed++; }
+    const v = uiValueOf(p);
+    if (!gainMatches(rv[tok], inKnobUnits(p, v)) && queue(p, v)) fixed++;
   }
   return fixed;
 }
-function requeueDriftedLqr(rv) {
-  let fixed = 0;
-  for (const p of LQR_PARAMS) {
-    const tok = PARAM_TOKEN[p.key];
-    if (!tok || !(tok in rv)) continue;
-    const v = lqrState[p.key];
-    const knobVal = (p.key === "x_ref") ? -v / WHEEL_RADIUS_MM : v;   // UI mm → firmware rad
-    if (!gainMatches(rv[tok], knobVal) && queueLqrSend(p, v)) fixed++;
-  }
-  return fixed;
-}
+// The knob reports the setpoint in shaft rad, sign-flipped (UI mm → firmware rad).
+const inKnobUnits = (p, v) => (p.key === "x_ref") ? -v / WHEEL_RADIUS_MM : v;
 setInterval(() => { verifyGains().catch(() => {}); }, 5000);
 
 // ─── Balancer sliders + calibration ─────────────────────────────────────────
@@ -4489,7 +4515,7 @@ function queueLqrSend(p, v) {
     const v = Math.round(parseFloat(wt.value) * 1000) / 1000;
     if (!isFinite(v)) return;
     cfgWaThr = v;
-    showWaThr(v);
+    showWaThreshold(v);
     pendingSends["__cfg_w"] = { kind: "C", code: "w", val: v };
   });
 })();
@@ -5222,14 +5248,23 @@ function strokeRing(ctx, ax, buf, head, toAxis = v => v) {
   }
   ctx.stroke();
 }
+// Rolling strip chart: axes, an optional decorate(ctx, ax, dpr) overlay, then
+// one trace per { buf, color, toAxis? } — all ring buffers share write index head.
+function drawStripChart(canvas, { traces, head, yRange, yUnit, spanSec, lineWidth = 1, decorate }) {
+  const { ctx, w, h, dpr } = fitCanvas(canvas);
+  const ax = drawAxes(ctx, w, h, dpr, yRange, yUnit, spanSec);
+  if (decorate) decorate(ctx, ax, dpr);
+  for (const t of traces) {
+    ctx.strokeStyle = t.color; ctx.lineWidth = lineWidth * dpr;
+    strokeRing(ctx, ax, t.buf, head, t.toAxis);
+  }
+}
 
 function drawTorque() {
   plotRaf = 0;
-  const { ctx, w, h, dpr } = fitCanvas(torqueCanvas);
   // ~30 Hz telemetry × PLOT_LEN samples ≈ 20 s window
-  const ax = drawAxes(ctx, w, h, dpr, [-PLOT_YR, PLOT_YR], "V", 20);
-  ctx.strokeStyle = "#ffb454"; ctx.lineWidth = 1 * dpr;
-  strokeRing(ctx, ax, torqueBuf, torqueIdx);
+  drawStripChart(torqueCanvas, { traces: [{ buf: torqueBuf, color: "#ffb454" }], head: torqueIdx,
+                                 yRange: [-PLOT_YR, PLOT_YR], yUnit: "V", spanSec: 20 });
 }
 new ResizeObserver(drawTorque).observe(torqueCanvas);
 drawTorque();
@@ -5263,13 +5298,11 @@ function onTiltRate(radPerS) {
 }
 function drawTiltRate() {
   tiltRateRaf = 0;
-  const { ctx, w, h, dpr } = fitCanvas(tiltRateCanvas);
   let maxAbs = 0;
   for (let i = 0; i < PLOT_LEN; i++) { const a = Math.abs(tiltRateBuf[i]); if (a > maxAbs) maxAbs = a; }
   const yr = Math.max(TILTRATE_YR_FLOOR, niceCeil(maxAbs));
-  const ax = drawAxes(ctx, w, h, dpr, [-yr, yr], "°/s", 20);
-  ctx.strokeStyle = "#7aa2ff"; ctx.lineWidth = 1 * dpr;
-  strokeRing(ctx, ax, tiltRateBuf, tiltRateIdx);
+  drawStripChart(tiltRateCanvas, { traces: [{ buf: tiltRateBuf, color: "#7aa2ff" }], head: tiltRateIdx,
+                                   yRange: [-yr, yr], yUnit: "°/s", spanSec: 20 });
 }
 new ResizeObserver(drawTiltRate).observe(tiltRateCanvas);
 drawTiltRate();
@@ -5292,17 +5325,19 @@ function onTiltBias(rad) {
 }
 function drawBias() {
   biasRaf = 0;
-  const { ctx, w, h, dpr } = fitCanvas(biasCanvas);
-  const ax = drawAxes(ctx, w, h, dpr, [-BIAS_YR_DEG, BIAS_YR_DEG], "°", 20);
-  // ±cap dashed lines at the firmware's hard cap (matches axis ends here).
+  drawStripChart(biasCanvas, {
+    traces: [{ buf: biasBuf, color: "#46d6c4", toAxis: toDeg }],   // curve: rad → deg for plotting
+    head: biasIdx, yRange: [-BIAS_YR_DEG, BIAS_YR_DEG], yUnit: "°", spanSec: 20, lineWidth: 1.5,
+    decorate: drawBiasCapLines,
+  });
+}
+// ±cap dashed lines at the firmware's hard cap (matches axis ends here).
+function drawBiasCapLines(ctx, ax, dpr) {
   ctx.strokeStyle = "rgba(255, 98, 90, 0.35)";
   ctx.setLineDash([4 * dpr, 4 * dpr]);
   ctx.beginPath(); ctx.moveTo(ax.plotX, ax.plotY); ctx.lineTo(ax.plotX + ax.plotW, ax.plotY); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(ax.plotX, ax.plotY + ax.plotH); ctx.lineTo(ax.plotX + ax.plotW, ax.plotY + ax.plotH); ctx.stroke();
   ctx.setLineDash([]);
-  // Curve (rad → deg for plotting).
-  ctx.strokeStyle = "#46d6c4"; ctx.lineWidth = 1.5 * dpr;
-  strokeRing(ctx, ax, biasBuf, biasIdx, toDeg);
 }
 new ResizeObserver(drawBias).observe(biasCanvas);
 drawBias();
@@ -5386,9 +5421,11 @@ function setAcroActive(on) {
 // rolling plots run at ~30 Hz (operator-set cadence).
 let _acroPillMs = 0, _acroPlotMs = 0;
 // Acro motion primitives from bytes 64..79 of an ≥80-byte telemetry packet.
+// Names follow the wire/[ACRO] tokens: qimu = IMU link angle (deg), sh = elbow
+// shaft angle (deg); w* = their rates (deg/s).
 function readAcroMotion(dv) {
-  return { qimu: dv.getFloat32(64, true), wimu: dv.getFloat32(68, true),
-           sh:   dv.getFloat32(72, true), wsh:  dv.getFloat32(76, true) };
+  return { qimu: f32le(dv, 64), wimu: f32le(dv, 68),
+           sh:   f32le(dv, 72), wsh:  f32le(dv, 76) };
 }
 function acroApplyMotion(qImu, wImu, sh, wsh) {
   const q2 = qImu, w2 = wImu, q1 = qImu + sh, w1 = wImu + wsh;
@@ -5546,26 +5583,22 @@ function drawAcro() {
 }
 if (acroCanvas) { new ResizeObserver(drawAcro).observe(acroCanvas); drawAcro(); }
 
-// Two-trace rolling strip chart shared by the angle + velocity plots.
-function drawAcroSeries(canvas, bufs, colors, yRange, yUnit) {
-  if (!canvas) return;
-  const { ctx, w, h, dpr } = fitCanvas(canvas);
-  const ax = drawAxes(ctx, w, h, dpr, yRange, yUnit, ACRO_PLOT_SPAN);
-  bufs.forEach((buf, t) => {
-    ctx.strokeStyle = colors[t]; ctx.lineWidth = 1 * dpr;
-    strokeRing(ctx, ax, buf, acroPlotIdx);
-  });
-}
+// Two-trace strip-chart spec (link 1 / link 2 colours) shared by the angle +
+// velocity plots.
+const acroStrip = (buf1, buf2, yRange, yUnit) => ({
+  traces: [{ buf: buf1, color: ACRO_C1 }, { buf: buf2, color: ACRO_C2 }],
+  head: acroPlotIdx, yRange, yUnit, spanSec: ACRO_PLOT_SPAN,
+});
 function drawAcroAngles() {
   acroAnglesRaf = 0;
-  drawAcroSeries(acroAnglesCanvas, [acroQ1Buf, acroQ2Buf], [ACRO_C1, ACRO_C2], [-180, 180], "°");
+  if (acroAnglesCanvas) drawStripChart(acroAnglesCanvas, acroStrip(acroQ1Buf, acroQ2Buf, [-180, 180], "°"));
 }
 function drawAcroVel() {
   acroVelRaf = 0;
   let maxAbs = 0;
   for (let i = 0; i < ACRO_PLOT_LEN; i++) maxAbs = Math.max(maxAbs, Math.abs(acroW1Buf[i]), Math.abs(acroW2Buf[i]));
   const yr = Math.max(60, niceCeil(maxAbs));   // auto-scale with a 60 °/s floor
-  drawAcroSeries(acroVelCanvas, [acroW1Buf, acroW2Buf], [ACRO_C1, ACRO_C2], [-yr, yr], "°/s");
+  if (acroVelCanvas) drawStripChart(acroVelCanvas, acroStrip(acroW1Buf, acroW2Buf, [-yr, yr], "°/s"));
 }
 function pushAcroPlot(q1, q2, w1, w2) {
   acroQ1Buf[acroPlotIdx] = q1; acroQ2Buf[acroPlotIdx] = q2;
@@ -5793,8 +5826,9 @@ if (acroArmEl) acroArmEl.onchange = (e) => {
 // hold for the (zero-order-hold) torque.
 const SID_MAX_MS   = 45000;  // auto-stop backstop (fw pattern proposed ~20 s)
 const SID_MIN_ROWS = 120;    // fitter rejects <100 samples; margin for resample
-const sid = { rec: false, rows: [], tauSeen: false, lastRaw: null, accMs: 0,
-              uwQ2: null, uwSh: null, timer: 0,
+const sid = { rec: false, rows: [], tauSeen: false,
+              lastFwMs: null, runMs: 0,   // last fw t_ms seen / run time accumulated from it
+              qimuUnwrap: null, shUnwrap: null, timer: 0,
               beginInfo: null,     // parsed [SID] begin tokens (dur/amp/gov) → log meta
               onFinalize: null };  // batch-collector hook, called at the end of sidStop
 
@@ -5811,11 +5845,11 @@ function setSidDownloadEnabled(on) {
 }
 // Track a wrapping ±180° signal into a continuous one. A genuine >180°/sample
 // jump can't happen at the packet rate, so the shortest-arc delta is safe.
-function sidUnwrap(uw, v) {
-  let d = v - uw.raw;
-  d -= 360 * Math.round(d / 360);
-  uw.raw = v; uw.cont += d;
-  return uw.cont;
+function sidUnwrap(tracker, deg) {
+  let step = deg - tracker.raw;
+  step -= 360 * Math.round(step / 360);
+  tracker.raw = deg; tracker.cont += step;
+  return tracker.cont;
 }
 
 // Per-packet capture — called from the telemetry handler for every ≥80-byte
@@ -5824,33 +5858,40 @@ function sidUnwrap(uw, v) {
 function sidOnPacket(dv) {
   if (!sid.rec) return;
   if (!sidAdvanceClock(dv.getUint32(60, true))) return;
-  const { qimu, wimu, sh, wsh } = readAcroMotion(dv);
-  let tau = 0;
-  if (dv.byteLength >= 84) { tau = dv.getFloat32(80, true); sid.tauSeen = true; }
-  // Unwrap qimu and sh independently, then derive the shoulder on the
-  // CONTINUOUS values (q1 = qimu + sh, contract (h)).
-  const qimuCont = sidUnwrap(sid.uwQ2 || (sid.uwQ2 = { raw: qimu, cont: qimu }), qimu);
-  const shCont   = sidUnwrap(sid.uwSh || (sid.uwSh = { raw: sh,   cont: sh   }), sh);
-  const DEG = Math.PI / 180;
-  sid.rows.push({ t: sid.accMs / 1000,
-                  th1: (qimuCont + shCont) * DEG, th2: qimuCont * DEG,
-                  w1: (wimu + wsh) * DEG, w2: wimu * DEG, tau });
+  const motion = readAcroMotion(dv);
+  sid.rows.push(sidSampleRow(motion, sidAppliedTorque(dv)));
   if ((sid.rows.length & 15) === 1)   // pill at ~4 Hz, not per packet
-    sidPill(`sysid: recording — ${sid.rows.length} · ${(sid.accMs / 1000).toFixed(1)} s`, "pill warn");
+    sidPill(`sysid: recording — ${sid.rows.length} · ${(sid.runMs / 1000).toFixed(1)} s`, "pill warn");
 }
-// Advance the run clock to fw t_ms rawMs. False when the sample must be
+// Applied elbow torque, f32 @80 once the fw streams 84-byte packets; else 0.
+function sidAppliedTorque(dv) {
+  if (dv.byteLength < 84) return 0;
+  sid.tauSeen = true;
+  return f32le(dv, 80);
+}
+// One log row (rad, rad/s; t in s). Unwrap qimu and sh independently, then
+// derive the shoulder on the CONTINUOUS values (q1 = qimu + sh, contract (h)).
+function sidSampleRow({ qimu, wimu, sh, wsh }, tau) {
+  const qimuCont = sidUnwrap(sid.qimuUnwrap || (sid.qimuUnwrap = { raw: qimu, cont: qimu }), qimu);
+  const shCont   = sidUnwrap(sid.shUnwrap || (sid.shUnwrap = { raw: sh,   cont: sh   }), sh);
+  const RAD_PER_DEG = Math.PI / 180;
+  return { t: sid.runMs / 1000,
+           th1: (qimuCont + shCont) * RAD_PER_DEG, th2: qimuCont * RAD_PER_DEG,
+           w1: (wimu + wsh) * RAD_PER_DEG, w2: wimu * RAD_PER_DEG, tau };
+}
+// Advance the run clock to the packet's fw t_ms (fwMs). False when the sample must be
 // dropped: a duplicate ms (t stays strictly increasing) or a gap/reset, which
 // also stops the run (data unusable across it).
-function sidAdvanceClock(rawMs) {
-  if (sid.lastRaw === null) {
-    sid.accMs = 0;
+function sidAdvanceClock(fwMs) {
+  if (sid.lastFwMs === null) {
+    sid.runMs = 0;
   } else {
-    const dMs = (rawMs - sid.lastRaw) >>> 0;   // wrap-safe fw-clock delta
+    const dMs = (fwMs - sid.lastFwMs) >>> 0;   // wrap-safe fw-clock delta
     if (dMs > 5000) { sidStop("telemetry gap/fw reset"); return false; }
     if (dMs === 0)  return false;
-    sid.accMs += dMs;
+    sid.runMs += dMs;
   }
-  sid.lastRaw = rawMs;
+  sid.lastFwMs = fwMs;
   return true;
 }
 
@@ -5873,8 +5914,7 @@ function sidArmBackstop(ms) {
 // Clear state + send AX + arm the backstop. Shared by the single-run button
 // (which confirms first) and the batch collector (one confirm for the batch).
 async function sidBeginRun() {
-  sid.rows = []; sid.tauSeen = false; sid.lastRaw = null; sid.accMs = 0;
-  sid.uwQ2 = null; sid.uwSh = null; sid.beginInfo = null;
+  sidResetCapture();
   sid.rec = true;
   setSidDownloadEnabled(false);   // stale run gone; re-enabled on a good finalize
   try { await transport.writeCmd("AX\n"); }
@@ -5898,6 +5938,11 @@ async function sidStart() {
   }
 }
 
+// Fresh capture state for the next run.
+function sidResetCapture() {
+  sid.rows = []; sid.tauSeen = false; sid.lastFwMs = null; sid.runMs = 0;
+  sid.qimuUnwrap = null; sid.shUnwrap = null; sid.beginInfo = null;
+}
 function sidStop(reason) {
   if (!sid.rec) return;
   sid.rec = false;
@@ -5906,11 +5951,15 @@ function sidStop(reason) {
   const ok = n >= SID_MIN_ROWS;
   setSidDownloadEnabled(ok);
   sidButtons(false);
+  sidReportRun(reason, n, dur, ok);
+  if (sid.onFinalize) sid.onFinalize(reason, ok, n, dur);   // batch collector hook
+}
+// Result pill + console summary for a finished run.
+function sidReportRun(reason, n, dur, ok) {
   sidPill(ok ? `sysid: ${n} samples · ${dur.toFixed(1)} s · τ ${sid.tauSeen ? "wire" : "zero"}`
              : `sysid: ${reason} — ${n} samples (need ${SID_MIN_ROWS})`,
           ok ? "pill ok" : "pill bad");
   log(sidStopSummary(reason, n, dur, ok), ok ? "ok" : "warn");
-  if (sid.onFinalize) sid.onFinalize(reason, ok, n, dur);   // batch collector hook
 }
 function sidStopSummary(reason, n, dur, ok) {
   const torque = sid.tauSeen
@@ -5993,21 +6042,23 @@ function sidCsvMeta(n, dt, extraMeta) {
 // CSV data lines on the uniform grid t = k·dt: states linearly interpolated,
 // torque zero-order-held (tau1 ≡ 0, passive shoulder).
 function sidResampledLines(rows, dt) {
-  const n = rows.length;
-  const num9 = v => String(+v.toPrecision(9));
   const out = [];
-  let j = 0;
-  for (let k = 0; k < n; k++) {
+  let seg = 0;   // raw sample at/before t (rows[seg]..rows[seg + 1] brackets it)
+  for (let k = 0; k < rows.length; k++) {
     const t = k * dt;
-    while (j < n - 2 && rows[j + 1].t <= t) j++;
-    const a = rows[j], b = rows[j + 1] || a;
-    const f = b.t > a.t ? Math.min(Math.max((t - a.t) / (b.t - a.t), 0), 1) : 0;
-    const lerp = (x, y) => x + (y - x) * f;
-    const tau2 = t >= b.t ? b.tau : a.tau;   // ZOH — hold, never lerp, the torque
-    out.push([num9(t), num9(lerp(a.th1, b.th1)), num9(lerp(a.th2, b.th2)),
-              num9(lerp(a.w1, b.w1)), num9(lerp(a.w2, b.w2)), "0", num9(tau2)].join(","));
+    while (seg < rows.length - 2 && rows[seg + 1].t <= t) seg++;
+    out.push(sidCsvLine(t, rows[seg], rows[seg + 1] || rows[seg]));
   }
   return out;
+}
+const sig9 = v => String(+v.toPrecision(9));   // 9 significant digits, no trailing zeros
+// CSV line at time t between raw samples prev and next.
+function sidCsvLine(t, prev, next) {
+  const frac = next.t > prev.t ? Math.min(Math.max((t - prev.t) / (next.t - prev.t), 0), 1) : 0;
+  const lerp = key => prev[key] + (next[key] - prev[key]) * frac;
+  const tau2 = t >= next.t ? next.tau : prev.tau;   // ZOH — hold, never lerp, the torque
+  return [sig9(t), sig9(lerp("th1")), sig9(lerp("th2")),
+          sig9(lerp("w1")), sig9(lerp("w2")), "0", sig9(tau2)].join(",");
 }
 
 // acxa/acxs — excitation amplitude + duration. Bespoke slider rows that SEND
